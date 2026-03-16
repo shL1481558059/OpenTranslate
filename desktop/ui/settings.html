@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings</title>
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="top">
+        <div>
+          <p class="label">Settings</p>
+          <h1>翻译设置</h1>
+          <p class="desc">引擎、接口与快捷键。</p>
+        </div>
+        <div class="actions">
+          <button type="submit" form="settingsForm">保存设置</button>
+        </div>
+      </header>
+
+      <form id="settingsForm" class="panel">
+        <section class="section">
+          <div class="section-title">
+            <h2>引擎选择</h2>
+            <p>本地翻译接口或直接连接 LLM。</p>
+          </div>
+          <label class="field">
+            <span>翻译模式</span>
+            <select id="engine">
+              <option value="api">翻译接口</option>
+              <option value="llm">直连 LLM</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="section">
+          <div class="section-title">
+            <h2>接口配置</h2>
+            <p>截图与手动翻译共用。</p>
+          </div>
+          <label class="field">
+            <span>翻译接口地址</span>
+            <input id="translationApiUrl" type="text" placeholder="http://127.0.0.1:8787/v1/translate" />
+          </label>
+        </section>
+
+        <section id="llmFields" class="section">
+          <div class="section-title">
+            <h2>LLM 直连</h2>
+            <p>OpenAI 兼容接口（chat/completions）。</p>
+          </div>
+          <label class="field">
+            <span>LLM API 地址</span>
+            <input id="llmApiUrl" type="text" placeholder="https://api.openai.com/v1" />
+          </label>
+          <label class="field">
+            <span>LLM API Key</span>
+            <input id="llmApiKey" type="password" />
+          </label>
+          <label class="field">
+            <span>LLM Model</span>
+            <input id="llmModel" type="text" placeholder="gpt-4o-mini" />
+          </label>
+        </section>
+
+        <section class="section">
+          <div class="section-title">
+            <h2>快捷键</h2>
+            <p>点击输入框后按组合键即可绑定。</p>
+          </div>
+          <label class="field">
+            <span>截图快捷键</span>
+            <input id="hotkey" type="text" placeholder="点击后按下组合键" />
+            <small class="hint">支持 Command / Control / Shift / Alt；按 Esc 清空。</small>
+          </label>
+        </section>
+
+        <div class="status" id="status"></div>
+      </form>
+    </main>
+    <script src="./settings.js"></script>
+  </body>
+</html>

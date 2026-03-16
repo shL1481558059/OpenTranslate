@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manual Translate</title>
+    <link rel="stylesheet" href="./translate.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="top">
+        <div>
+          <p class="label">Manual Translate</p>
+          <h1>手动翻译</h1>
+          <p class="desc">把文本贴进来，输出为中文。支持多行。</p>
+        </div>
+        <div class="actions">
+          <button id="translateBtn">翻译</button>
+          <button id="copyBtn" class="ghost" disabled>复制结果</button>
+        </div>
+      </header>
+
+      <div id="status" class="status"></div>
+
+      <section class="grid">
+        <div class="block">
+          <label for="input">输入文本</label>
+          <textarea id="input" placeholder="请输入要翻译的文本"></textarea>
+        </div>
+        <div class="block">
+          <label>翻译结果</label>
+          <pre id="output" class="output"></pre>
+        </div>
+      </section>
+
+      <footer class="foot">快捷键：在设置中绑定截图热键。</footer>
+    </main>
+
+    <script src="./translate.js"></script>
+  </body>
+</html>
