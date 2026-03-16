@@ -4,6 +4,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 
 const PORT = Number(process.env.TRANSLATION_API_PORT || 8787);
+const HOST = process.env.TRANSLATION_API_HOST || '127.0.0.1';
 const LLM_API_URL = process.env.LLM_API_URL || 'https://api.openai.com/v1';
 const LLM_API_KEY = process.env.LLM_API_KEY || '';
 const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
@@ -335,7 +336,8 @@ async function callLocalTranslate(input) {
   };
 }
 
-const server = http.createServer(async (req, res) => {
+function createServer() {
+  return http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     return jsonResponse(res, 200, { ok: true, service: 'translation-api' });
   }
@@ -399,9 +401,39 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  return jsonResponse(res, 404, { error_code: 'not_found' });
-});
+    return jsonResponse(res, 404, { error_code: 'not_found' });
+  });
+}
 
-server.listen(PORT, () => {
-  console.log(`[translation-api] listening on http://127.0.0.1:${PORT}`);
-});
+function startTranslationApi(options = {}) {
+  const port = Number(options.port || PORT);
+  const host = options.host || HOST;
+  const server = createServer();
+  return new Promise((resolve) => {
+    server.on('error', (error) => {
+      if (error && error.code === 'EADDRINUSE') {
+        console.warn(`[translation-api] port already in use: ${host}:${port}`);
+        resolve({ ok: false, alreadyRunning: true, error });
+        return;
+      }
+      console.error('[translation-api] failed to start', error);
+      resolve({ ok: false, error });
+    });
+    server.listen(port, host, () => {
+      console.log(`[translation-api] listening on http://${host}:${port}`);
+      resolve({ ok: true, server, host, port });
+    });
+  });
+}
+
+module.exports = {
+  startTranslationApi
+};
+
+if (require.main === module) {
+  startTranslationApi().then((result) => {
+    if (!result?.ok && !result?.alreadyRunning) {
+      process.exitCode = 1;
+    }
+  });
+}

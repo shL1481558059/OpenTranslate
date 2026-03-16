@@ -7,6 +7,7 @@
   --line: rgba(205, 205, 205, 0.85);
   --accent: #1f2a20;
   --accent-soft: #374039;
+  --titlebar-offset: 28px;
 }
 
 * {
@@ -26,7 +27,7 @@ body {
 .page {
   max-width: 860px;
   margin: 0 auto;
-  padding: 16px 18px 24px;
+  padding: calc(16px + var(--titlebar-offset)) 18px 24px;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -155,6 +156,6 @@ textarea {
 
 @media (max-width: 720px) {
   .page {
-    padding: 14px 14px 20px;
+    padding: calc(14px + var(--titlebar-offset)) 14px 20px;
   }
 }

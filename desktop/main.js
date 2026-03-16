@@ -2,37 +2,73 @@ require('../load-env');
 
 const path = require('node:path');
 const fs = require('node:fs');
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeImage, Menu } = require('electron');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeImage, Menu, Tray, dialog } = require('electron');
+
+const APP_NAME = 'OpenTranslate';
+app.setName(APP_NAME);
+app.name = APP_NAME;
 
 const { captureRect, captureScreen, cleanupImage } = require('./lib/capture');
+const { startTranslationApi } = require('../api/server');
 const ocrProvider = require('./lib/ocr-provider');
 const translationProvider = require('./lib/translation-provider');
 const layoutEngine = require('./lib/layout-engine');
 
 const CAPTURE_DELAY_MS = Number(process.env.SNAP_TRANSLATE_CAPTURE_DELAY_MS || 280);
+const DEFAULT_API_PORT = Number(process.env.TRANSLATION_API_PORT || 8787);
+const execFileAsync = promisify(execFile);
 
 let selectionWindow = null;
 let overlayWindow = null;
 let lastSelectionDisplayId = null;
 let overlayReadyPromise = null;
 let translateWindow = null;
-let settingsWindow = null;
 let settings = null;
+const appIconPath = path.join(__dirname, 'assets', 'app-icon-apple.png');
+const trayIconPath = path.join(__dirname, 'assets', 'tray-template-18.png');
+const trayIconPath2x = path.join(__dirname, 'assets', 'tray-template-36.png');
+let tray = null;
+let apiServer = null;
+let apiHost = null;
+let apiPort = null;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizePort(value, fallback) {
+  const num = Number.parseInt(String(value || ''), 10);
+  if (!Number.isFinite(num) || num < 1 || num > 65535) {
+    return fallback;
+  }
+  return num;
+}
+
+function applyApiDefaults(next) {
+  const port = normalizePort(next.apiPort, DEFAULT_API_PORT);
+  const apiExposeLan = typeof next.apiExposeLan === 'boolean' ? next.apiExposeLan : true;
+  return {
+    ...next,
+    apiPort: port,
+    apiExposeLan,
+    translationApiUrl: `http://127.0.0.1:${port}/v1/translate`
+  };
+}
+
 function getDefaultSettings() {
   const envEngine = String(process.env.DESKTOP_TRANSLATION_ENGINE || '').toLowerCase();
-  return {
+  const apiPort = normalizePort(process.env.TRANSLATION_API_PORT, DEFAULT_API_PORT);
+  return applyApiDefaults({
     engine: envEngine === 'llm' ? 'llm' : 'api',
-    translationApiUrl: process.env.TRANSLATION_API_URL || 'http://127.0.0.1:8787/v1/translate',
     llmApiUrl: process.env.LLM_API_URL || 'https://api.openai.com/v1',
     llmApiKey: process.env.LLM_API_KEY || '',
     llmModel: process.env.LLM_MODEL || 'gpt-4o-mini',
-    hotkey: process.env.SNAP_TRANSLATE_HOTKEY || 'CommandOrControl+Shift+T'
-  };
+    hotkey: process.env.SNAP_TRANSLATE_HOTKEY || 'CommandOrControl+Shift+T',
+    apiExposeLan: true,
+    apiPort
+  });
 }
 
 function getSettingsPath() {
@@ -65,6 +101,19 @@ function sanitizeSettings(input) {
   if (typeof input.hotkey === 'string') {
     next.hotkey = input.hotkey;
   }
+  if (typeof input.apiExposeLan === 'boolean') {
+    next.apiExposeLan = input.apiExposeLan;
+  } else if (typeof input.apiExposeLan === 'string') {
+    const normalized = input.apiExposeLan.toLowerCase();
+    if (normalized === 'true' || normalized === '1') {
+      next.apiExposeLan = true;
+    } else if (normalized === 'false' || normalized === '0') {
+      next.apiExposeLan = false;
+    }
+  }
+  if (input.apiPort !== undefined) {
+    next.apiPort = normalizePort(input.apiPort, DEFAULT_API_PORT);
+  }
   return next;
 }
 
@@ -73,14 +122,14 @@ function loadSettings() {
   try {
     const raw = fs.readFileSync(getSettingsPath(), 'utf8');
     const parsed = JSON.parse(raw);
-    return { ...defaults, ...sanitizeSettings(parsed) };
+    return applyApiDefaults({ ...defaults, ...sanitizeSettings(parsed) });
   } catch {
     return defaults;
   }
 }
 
 function saveSettings(next) {
-  settings = { ...settings, ...sanitizeSettings(next) };
+  settings = applyApiDefaults({ ...settings, ...sanitizeSettings(next) });
   fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8');
   return settings;
 }
@@ -111,6 +160,120 @@ function updateHotkey(nextHotkey) {
   }
   saveSettings({ hotkey: trimmed });
   return { ok: true };
+}
+
+function getUserModelDir() {
+  return path.join(app.getPath('userData'), 'models', 'argos');
+}
+
+function resolvePythonPath() {
+  if (process.env.LOCAL_TRANSLATE_PYTHON) {
+    return path.resolve(process.env.LOCAL_TRANSLATE_PYTHON);
+  }
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'venv-argos', 'bin', 'python');
+  }
+  return path.join(process.cwd(), '.venv-argos', 'bin', 'python');
+}
+
+function resolveDownloadScriptPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'api', 'local', 'download_model.py');
+  }
+  return path.join(__dirname, '..', 'api', 'local', 'download_model.py');
+}
+
+function hasLocalModel(modelDir) {
+  try {
+    const entries = fs.readdirSync(modelDir);
+    return entries.some((name) => name.endsWith('.argosmodel'));
+  } catch {
+    return false;
+  }
+}
+
+async function ensureLocalModelReady(pythonPath, modelDir) {
+  if (hasLocalModel(modelDir)) {
+    return true;
+  }
+  fs.mkdirSync(modelDir, { recursive: true });
+  const scriptPath = resolveDownloadScriptPath();
+  try {
+    await execFileAsync(pythonPath, [scriptPath, modelDir], {
+      env: { ...process.env, LOCAL_TRANSLATE_MODEL_DIR: modelDir }
+    });
+    return hasLocalModel(modelDir);
+  } catch (error) {
+    console.error('[local-model] download failed', error);
+    if (app.isReady()) {
+      dialog.showMessageBox({
+        type: 'error',
+        message: '本地模型下载失败',
+        detail: '请检查网络连接后重试。'
+      });
+    }
+    return false;
+  }
+}
+
+function applyLocalApiEnv(nextSettings) {
+  const pythonPath = resolvePythonPath();
+  const modelDir = getUserModelDir();
+  process.env.TRANSLATION_ENGINE = 'local';
+  process.env.LOCAL_TRANSLATE_MODEL_DIR = modelDir;
+  process.env.LOCAL_TRANSLATE_PYTHON = pythonPath;
+  process.env.LOCAL_TRANSLATE_VENV = path.dirname(path.dirname(pythonPath));
+  process.env.LOCAL_TRANSLATE_TIMEOUT_MS = process.env.LOCAL_TRANSLATE_TIMEOUT_MS || '60000';
+  process.env.SNAP_TRANSLATE_IS_PACKAGED = app.isPackaged ? '1' : '0';
+  process.env.SNAP_TRANSLATE_RESOURCES_PATH = process.resourcesPath || '';
+  process.env.TRANSLATION_API_URL = `http://127.0.0.1:${nextSettings.apiPort}/v1/translate`;
+  return { pythonPath, modelDir };
+}
+
+let apiStarting = null;
+async function startLocalApi(nextSettings) {
+  if (apiServer || apiStarting) {
+    return apiStarting || { ok: true };
+  }
+  apiStarting = (async () => {
+    const host = nextSettings.apiExposeLan ? '0.0.0.0' : '127.0.0.1';
+    const port = normalizePort(nextSettings.apiPort, DEFAULT_API_PORT);
+    const { pythonPath, modelDir } = applyLocalApiEnv({ ...nextSettings, apiPort: port });
+    const ready = await ensureLocalModelReady(pythonPath, modelDir);
+    if (!ready) {
+      return { ok: false, error: 'model_not_ready' };
+    }
+    const result = await startTranslationApi({ host, port });
+    if (result.ok) {
+      apiServer = result.server;
+      apiHost = host;
+      apiPort = port;
+    } else if (result.alreadyRunning) {
+      apiHost = host;
+      apiPort = port;
+    }
+    return result;
+  })();
+  try {
+    return await apiStarting;
+  } finally {
+    apiStarting = null;
+  }
+}
+
+async function stopLocalApi() {
+  if (!apiServer) {
+    return;
+  }
+  await new Promise((resolve) => {
+    apiServer.close(() => resolve());
+  });
+  apiServer = null;
+}
+
+async function restartLocalApi(nextSettings) {
+  await stopLocalApi();
+  return startLocalApi(nextSettings);
 }
 
 function averageColorFromBitmap(bitmap, imageWidth, imageHeight, rect, grid = 8) {
@@ -407,6 +570,7 @@ function ensureTranslateWindow() {
     titleBarStyle: 'hiddenInset',
     transparent: true,
     backgroundColor: '#00000000',
+    icon: appIconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -420,41 +584,16 @@ function ensureTranslateWindow() {
   return translateWindow;
 }
 
-function ensureSettingsWindow() {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    return settingsWindow;
-  }
-  settingsWindow = new BrowserWindow({
-    width: 640,
-    height: 560,
-    show: true,
-    resizable: true,
-    title: 'Settings',
-    frame: true,
-    titleBarStyle: 'hiddenInset',
-    transparent: true,
-    backgroundColor: '#00000000',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  });
-  settingsWindow.on('closed', () => {
-    settingsWindow = null;
-  });
-  settingsWindow.loadFile(path.join(__dirname, 'ui', 'settings.html'));
-  return settingsWindow;
-}
-
 function showTranslateWindow() {
   const win = ensureTranslateWindow();
+  win.loadFile(path.join(__dirname, 'ui', 'translate.html'));
   win.show();
   win.focus();
 }
 
 function showSettingsWindow() {
-  const win = ensureSettingsWindow();
+  const win = ensureTranslateWindow();
+  win.loadFile(path.join(__dirname, 'ui', 'settings.html'));
   win.show();
   win.focus();
 }
@@ -462,7 +601,7 @@ function showSettingsWindow() {
 function setupMenu() {
   const template = [
     {
-      label: app.name,
+      label: APP_NAME,
       submenu: [
         { label: 'Manual Translate…', click: showTranslateWindow },
         { label: 'Settings…', click: showSettingsWindow },
@@ -472,6 +611,43 @@ function setupMenu() {
     }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function ensureTray() {
+  if (process.platform !== 'darwin') {
+    return null;
+  }
+  if (tray) {
+    return tray;
+  }
+  let icon = nativeImage.createFromPath(trayIconPath);
+  const icon2x = nativeImage.createFromPath(trayIconPath2x);
+  if (!icon.isEmpty() && !icon2x.isEmpty()) {
+    icon.addRepresentation({
+      scaleFactor: 2,
+      width: icon2x.getSize().width,
+      height: icon2x.getSize().height,
+      buffer: icon2x.toPNG()
+    });
+    icon.setTemplateImage(true);
+  }
+  tray = new Tray(icon);
+  tray.setToolTip(APP_NAME);
+  const menu = Menu.buildFromTemplate([
+    { label: 'Manual Translate…', click: showTranslateWindow },
+    { label: 'Settings…', click: showSettingsWindow },
+    { type: 'separator' },
+    { role: 'quit' }
+  ]);
+  tray.setContextMenu(menu);
+  tray.on('click', () => {
+    if (translateWindow && translateWindow.isVisible()) {
+      translateWindow.hide();
+      return;
+    }
+    showTranslateWindow();
+  });
+  return tray;
 }
 
 async function runPipeline(rect) {
@@ -684,7 +860,9 @@ async function runPipeline(rect) {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  app.setName(APP_NAME);
+  app.name = APP_NAME;
   if (process.platform === 'darwin') {
     const accessory = process.env.SNAP_TRANSLATE_ACCESSORY === '1';
     if (accessory) {
@@ -697,10 +875,15 @@ app.whenReady().then(() => {
     } else if (app.setActivationPolicy) {
       app.setActivationPolicy('regular');
     }
+    if (app.dock && app.dock.setIcon) {
+      app.dock.setIcon(appIconPath);
+    }
   }
 
   settings = loadSettings();
   setupMenu();
+  ensureTray();
+  await startLocalApi(settings);
 
   const ok = registerHotkey(settings.hotkey);
   if (!ok) {
@@ -748,8 +931,20 @@ app.whenReady().then(() => {
 
   ipcMain.handle('settings:get', () => settings);
 
+  ipcMain.handle('settings:open', () => {
+    showSettingsWindow();
+    return true;
+  });
+
+  ipcMain.handle('translate:open', () => {
+    showTranslateWindow();
+    return true;
+  });
+
   ipcMain.handle('settings:set', async (_, next) => {
     const payload = sanitizeSettings(next);
+    const prevPort = settings.apiPort;
+    const prevExpose = settings.apiExposeLan;
     let hotkeyError = null;
     if (payload.hotkey && payload.hotkey !== settings.hotkey) {
       const result = updateHotkey(payload.hotkey);
@@ -759,6 +954,9 @@ app.whenReady().then(() => {
       }
     }
     saveSettings(payload);
+    if (settings.apiPort !== prevPort || settings.apiExposeLan !== prevExpose) {
+      await restartLocalApi(settings);
+    }
     return { ok: !hotkeyError, error: hotkeyError, settings };
   });
 
@@ -780,15 +978,12 @@ app.whenReady().then(() => {
   // window controls are handled by the system title bar
 
   app.on('activate', () => {
-    if (!translateWindow && !settingsWindow) {
+    if (!translateWindow) {
       showTranslateWindow();
-    } else if (translateWindow) {
-      translateWindow.show();
-      translateWindow.focus();
-    } else if (settingsWindow) {
-      settingsWindow.show();
-      settingsWindow.focus();
+      return;
     }
+    translateWindow.show();
+    translateWindow.focus();
   });
 });
 
@@ -798,4 +993,11 @@ app.on('window-all-closed', (event) => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  if (apiServer) {
+    try {
+      apiServer.close();
+    } catch {
+      // ignore
+    }
+  }
 });

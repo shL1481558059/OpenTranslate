@@ -1,12 +1,15 @@
 const formEl = document.getElementById('settingsForm');
 const engineEl = document.getElementById('engine');
 const translationApiUrlEl = document.getElementById('translationApiUrl');
+const apiExposeLanEl = document.getElementById('apiExposeLan');
+const apiPortEl = document.getElementById('apiPort');
 const llmApiUrlEl = document.getElementById('llmApiUrl');
 const llmApiKeyEl = document.getElementById('llmApiKey');
 const llmModelEl = document.getElementById('llmModel');
 const hotkeyEl = document.getElementById('hotkey');
 const llmFieldsEl = document.getElementById('llmFields');
 const statusEl = document.getElementById('status');
+const backBtn = document.getElementById('backBtn');
 let hotkeyBinding = false;
 
 function setStatus(message, type) {
@@ -20,6 +23,20 @@ function toggleFields() {
   } else {
     llmFieldsEl.style.display = 'none';
   }
+}
+
+function normalizePort(value) {
+  const num = Number.parseInt(String(value || ''), 10);
+  if (!Number.isFinite(num) || num < 1 || num > 65535) {
+    return null;
+  }
+  return num;
+}
+
+function syncTranslationApiUrl() {
+  if (!apiPortEl || !translationApiUrlEl) return;
+  const port = normalizePort(apiPortEl.value) || 8787;
+  translationApiUrlEl.value = `http://127.0.0.1:${port}/v1/translate`;
 }
 
 function buildAccelerator(event) {
@@ -76,11 +93,15 @@ async function loadSettings() {
     const settings = await window.snapTranslate.getSettings();
     engineEl.value = settings.engine || 'api';
     translationApiUrlEl.value = settings.translationApiUrl || '';
+    translationApiUrlEl.readOnly = true;
     llmApiUrlEl.value = settings.llmApiUrl || '';
     llmApiKeyEl.value = settings.llmApiKey || '';
     llmModelEl.value = settings.llmModel || '';
     hotkeyEl.value = settings.hotkey || '';
+    apiExposeLanEl.checked = settings.apiExposeLan !== false;
+    apiPortEl.value = settings.apiPort || 8787;
     hotkeyEl.readOnly = true;
+    syncTranslationApiUrl();
     toggleFields();
   } catch (error) {
     setStatus('加载设置失败。', 'error');
@@ -88,6 +109,7 @@ async function loadSettings() {
 }
 
 engineEl.addEventListener('change', toggleFields);
+apiPortEl?.addEventListener('input', syncTranslationApiUrl);
 
 formEl.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -98,7 +120,9 @@ formEl.addEventListener('submit', async (event) => {
     translationApiUrl: translationApiUrlEl.value.trim(),
     llmApiUrl: llmApiUrlEl.value.trim(),
     llmApiKey: llmApiKeyEl.value.trim(),
-    llmModel: llmModelEl.value.trim()
+    llmModel: llmModelEl.value.trim(),
+    apiExposeLan: apiExposeLanEl.checked,
+    apiPort: normalizePort(apiPortEl.value) || 8787
   };
 
   const result = await window.snapTranslate.setSettings(payload);
@@ -144,6 +168,18 @@ hotkeyEl.addEventListener('keydown', async (event) => {
     return;
   }
   setStatus(`快捷键已更新为 ${accelerator}`, 'success');
+});
+
+backBtn?.addEventListener('click', async () => {
+  if (!window.snapTranslate?.openTranslate) {
+    setStatus('无法返回翻译页。', 'error');
+    return;
+  }
+  try {
+    await window.snapTranslate.openTranslate();
+  } catch (error) {
+    setStatus(`返回失败：${error.message || error}`, 'error');
+  }
 });
 
 loadSettings();

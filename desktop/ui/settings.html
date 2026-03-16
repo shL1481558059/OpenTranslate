@@ -15,6 +15,7 @@
           <p class="desc">引擎、接口与快捷键。</p>
         </div>
         <div class="actions">
+          <button id="backBtn" type="button" class="ghost">返回</button>
           <button type="submit" form="settingsForm">保存设置</button>
         </div>
       </header>
@@ -42,6 +43,22 @@
           <label class="field">
             <span>翻译接口地址</span>
             <input id="translationApiUrl" type="text" placeholder="http://127.0.0.1:8787/v1/translate" />
+          </label>
+        </section>
+
+        <section class="section">
+          <div class="section-title">
+            <h2>API 服务</h2>
+            <p>本地服务端口与局域网访问。</p>
+          </div>
+          <label class="field">
+            <span>允许局域网访问</span>
+            <input id="apiExposeLan" type="checkbox" />
+            <small class="hint">开启后局域网可访问本机 API。</small>
+          </label>
+          <label class="field">
+            <span>API 端口</span>
+            <input id="apiPort" type="number" min="1" max="65535" />
           </label>
         </section>
 
@@ -78,6 +95,8 @@
 
         <div class="status" id="status"></div>
       </form>
+
+      <footer class="foot">快捷键：在设置中绑定截图热键。</footer>
     </main>
     <script src="./settings.js"></script>
   </body>

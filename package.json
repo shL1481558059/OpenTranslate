@@ -1,5 +1,6 @@
 {
   "name": "snap-translate-mac",
+  "productName": "OpenTranslate",
   "version": "0.1.0",
   "private": true,
   "description": "Mac screenshot translate app (Electron) with small LLM API service",
@@ -7,12 +8,35 @@
   "scripts": {
     "start:api": "node api/server.js",
     "start:desktop": "electron desktop/main.js",
+    "dist": "electron-builder --mac dmg",
     "test": "node --test tests/*.test.js"
   },
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {
-    "electron": "^37.0.0"
+  "build": {
+    "appId": "com.opentranslate.app",
+    "productName": "OpenTranslate",
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "desktop/assets/app-icon.icns"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "api/local/**"
+    ],
+    "extraResources": [
+      {
+        "from": ".venv-argos",
+        "to": "venv-argos"
+      }
+    ]
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^37.0.0",
+    "electron-builder": "^25.1.8"
   }
 }

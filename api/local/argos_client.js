@@ -11,7 +11,11 @@ const VENV_DIR = path.resolve(process.env.LOCAL_TRANSLATE_VENV || path.join(proc
 const PYTHON_PATH = path.resolve(process.env.LOCAL_TRANSLATE_PYTHON || path.join(VENV_DIR, 'bin', 'python'));
 const TIMEOUT_MS = Number(process.env.LOCAL_TRANSLATE_TIMEOUT_MS || 20000);
 const REQUIREMENTS_PATH = path.resolve(__dirname, 'requirements.txt');
-const WORKER_PATH = path.resolve(__dirname, 'argos_worker.py');
+const IS_PACKAGED = process.env.SNAP_TRANSLATE_IS_PACKAGED === '1';
+const RESOURCES_PATH = process.env.SNAP_TRANSLATE_RESOURCES_PATH || process.resourcesPath || '';
+const WORKER_PATH = IS_PACKAGED && RESOURCES_PATH
+  ? path.join(RESOURCES_PATH, 'api', 'local', 'argos_worker.py')
+  : path.resolve(__dirname, 'argos_worker.py');
 
 let initPromise = null;
 let worker = null;

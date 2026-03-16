@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('snapTranslate', {
   setSettings: (settings) => ipcRenderer.invoke('settings:set', settings),
   updateHotkey: (hotkey) => ipcRenderer.invoke('hotkey:update', hotkey),
   translateText: (text) => ipcRenderer.invoke('translate:text', { text }),
+  openSettings: () => ipcRenderer.invoke('settings:open'),
+  openTranslate: () => ipcRenderer.invoke('translate:open'),
   onOverlayRender: (handler) => {
     ipcRenderer.on('overlay:render', (_, payload) => handler(payload));
   }

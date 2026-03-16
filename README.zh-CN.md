@@ -1,10 +1,10 @@
-# 截图即译（Mac / Electron）中文文档
+# OpenTranslate（Mac / Electron）中文文档
 
 本项目是一个 Mac 端截图翻译工具：
 - 全局快捷键触发
 - 框选屏幕区域
 - 本地 OCR（Apple Vision）提取文本块
-- 小型 LLM 翻译 API 批量翻译
+- 内置本地翻译 API（Argos），桌面端启动时自动拉起
 - 译文覆盖在原区域（块级布局）
 
 ## 功能概览
@@ -29,7 +29,7 @@
 - Xcode Command Line Tools（用于 `xcrun swift`）
 - （可选）Python 3（使用本地 Argos 翻译引擎时需要）
 
-## 快速开始
+## 快速开始（开发模式）
 
 1. 安装依赖
 ```bash
@@ -47,22 +47,22 @@ cp .env.example .env
 - 将 Argos 模型（`.argosmodel`）放入 `models/argos/`
 - 首次运行会自动创建 `./.venv` 并安装依赖
 
-3. 启动翻译 API
-```bash
-export $(grep -v '^#' .env | xargs)
-npm run start:api
-```
-
-4. 启动桌面端
+3. 启动桌面端
 ```bash
 export $(grep -v '^#' .env | xargs)
 npm run start:desktop
 ```
 
-5. 使用
+4. 使用
 - 按 `Command+Shift+T`
 - 拖拽框选区域
 - 等待译文覆盖
+
+可选：单独启动翻译 API（用于独立调试）
+```bash
+export $(grep -v '^#' .env | xargs)
+npm run start:api
+```
 
 ## 翻译 API 说明
 
@@ -114,6 +114,32 @@ npm run start:desktop
 - `LOCAL_TRANSLATE_MODEL_DIR`：本地翻译模型目录（Argos）
 - `LOCAL_TRANSLATE_VENV`：本地翻译引擎的虚拟环境目录
 - `SNAP_TRANSLATE_HOTKEY`：全局快捷键
+
+## 打包与发布（DMG）
+
+使用 `electron-builder` 生成 DMG：
+```bash
+npm run dist
+```
+
+输出目录：`dist/`
+
+说明：
+- DMG 内置本地翻译 API，桌面端启动时自动拉起
+- 首次启动会自动下载 Argos 模型（需要联网）
+- 模型存放于 `app.getPath('userData')/models/argos`
+- 未做签名/公证（本地分发场景）
+
+## 设置页新增项
+
+- 允许局域网访问：开启后 API 监听 `0.0.0.0`，局域网可访问
+- API 端口：默认 `8787`
+- 翻译接口地址自动保持为 `http://127.0.0.1:${端口}/v1/translate`
+
+局域网访问示例：
+```
+http://<本机IP>:<端口>/v1/translate
+```
 
 ## 常见问题
 

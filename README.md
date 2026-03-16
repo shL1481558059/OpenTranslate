@@ -1,10 +1,10 @@
-# Snap Translate Mac (Electron)
+# OpenTranslate (Electron for macOS)
 
 Mac screenshot translate app:
 - Global hotkey trigger
 - Select screen region
 - Local OCR via Apple Vision (Swift script)
-- Batch translate by a small LLM API service or local Argos engine
+- Built-in local translation API (Argos), auto-started by the desktop app
 - Overlay translated blocks at original positions
 
 ## Architecture
@@ -13,7 +13,7 @@ Mac screenshot translate app:
 - `api/`: translation API (`POST /v1/translate`)
 - `desktop/scripts/vision_ocr.swift`: local OCR helper
 
-## Quick start
+## Quick start (dev)
 
 1. Install deps:
    ```bash
@@ -29,17 +29,18 @@ Mac screenshot translate app:
    - set `TRANSLATION_ENGINE=local`
    - put `.argosmodel` files under `models/argos/`
    - first run will auto-create `./.venv` and install deps
-3. Start translation API:
-   ```bash
-   export $(grep -v '^#' .env | xargs)
-   npm run start:api
-   ```
-4. Start desktop app (new terminal):
+3. Start desktop app:
    ```bash
    export $(grep -v '^#' .env | xargs)
    npm run start:desktop
    ```
-5. Press `Command+Shift+T`, drag to select area.
+4. Press `Command+Shift+T`, drag to select area.
+
+Optional: run API service standalone for debugging
+```bash
+export $(grep -v '^#' .env | xargs)
+npm run start:api
+```
 
 ## API contract
 
@@ -72,3 +73,27 @@ Response:
 - Grant screen recording permission to the app process if screenshot capture fails.
 - OCR is block-level for layout mapping; not pixel-perfect typography replacement.
 - This version supports LLM or local Argos Translate.
+
+## Packaging (DMG)
+
+Build DMG with electron-builder:
+```bash
+npm run dist
+```
+
+Notes:
+- Desktop app auto-starts the local API.
+- First launch downloads Argos model (network required).
+- Model path: `app.getPath('userData')/models/argos`.
+- No code signing / notarization by default.
+
+## Settings additions
+
+- LAN access toggle (binds API to `0.0.0.0`)
+- API port (default `8787`)
+- Translation API URL is kept as `http://127.0.0.1:${port}/v1/translate`
+
+LAN access example:
+```
+http://<host-ip>:<port>/v1/translate
+```

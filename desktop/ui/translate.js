@@ -3,6 +3,7 @@ const outputEl = document.getElementById('output');
 const statusEl = document.getElementById('status');
 const translateBtn = document.getElementById('translateBtn');
 const copyBtn = document.getElementById('copyBtn');
+const settingsBtn = document.getElementById('settingsBtn');
 
 function setStatus(message, type) {
   statusEl.textContent = message || '';
@@ -54,6 +55,17 @@ async function copyResult() {
 
 translateBtn.addEventListener('click', doTranslate);
 copyBtn.addEventListener('click', copyResult);
+settingsBtn.addEventListener('click', async () => {
+  if (!window.snapTranslate?.openSettings) {
+    setStatus('无法打开设置。', 'error');
+    return;
+  }
+  try {
+    await window.snapTranslate.openSettings();
+  } catch (error) {
+    setStatus(`打开设置失败：${error.message || error}`, 'error');
+  }
+});
 
 inputEl.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
