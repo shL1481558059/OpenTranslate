@@ -1,10 +1,33 @@
 const path = require('node:path');
+const fs = require('node:fs');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { app } = require('electron');
 
 const execFileAsync = promisify(execFile);
-const SCRIPT_PATH = path.join(__dirname, '..', 'scripts', 'vision_ocr.swift');
 const DEBUG_OCR = process.env.SNAP_TRANSLATE_DEBUG_OCR === '1';
+
+function resolveScriptPath() {
+  const local = path.join(__dirname, '..', 'scripts', 'vision_ocr.swift');
+  if (!app || !app.isPackaged) {
+    return local;
+  }
+  const unpacked = path.join(
+    process.resourcesPath,
+    'app.asar.unpacked',
+    'desktop',
+    'scripts',
+    'vision_ocr.swift'
+  );
+  if (fs.existsSync(unpacked)) {
+    return unpacked;
+  }
+  const resources = path.join(process.resourcesPath, 'desktop', 'scripts', 'vision_ocr.swift');
+  if (fs.existsSync(resources)) {
+    return resources;
+  }
+  return local;
+}
 
 function normalizeVisionBBox(normalizedBBox, width, height) {
   const x = Math.max(0, Math.round(normalizedBBox.x * width));
@@ -18,7 +41,8 @@ function normalizeVisionBBox(normalizedBBox, width, height) {
 }
 
 async function recognize(imagePath) {
-  const { stdout } = await execFileAsync('xcrun', ['swift', SCRIPT_PATH, imagePath], {
+  const scriptPath = resolveScriptPath();
+  const { stdout } = await execFileAsync('xcrun', ['swift', scriptPath, imagePath], {
     maxBuffer: 1024 * 1024 * 8
   });
   const parsed = JSON.parse(stdout);

@@ -4,10 +4,42 @@ const statusEl = document.getElementById('status');
 const translateBtn = document.getElementById('translateBtn');
 const copyBtn = document.getElementById('copyBtn');
 const settingsBtn = document.getElementById('settingsBtn');
+const sourceLangEl = document.getElementById('sourceLang');
+const targetLangEl = document.getElementById('targetLang');
 
 function setStatus(message, type) {
   statusEl.textContent = message || '';
   statusEl.className = `status${type ? ` ${type}` : ''}`;
+}
+
+function normalizeLang(value, fallback) {
+  const trimmed = String(value || '').trim();
+  return trimmed || fallback;
+}
+
+async function loadSettings() {
+  try {
+    const settings = await window.snapTranslate.getSettings();
+    sourceLangEl.value = settings.sourceLang || 'auto';
+    targetLangEl.value = settings.targetLang || 'zh-CN';
+  } catch (error) {
+    setStatus('加载设置失败。', 'error');
+  }
+}
+
+async function saveLangSettings() {
+  if (!window.snapTranslate?.setSettings) {
+    return;
+  }
+  const payload = {
+    sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
+    targetLang: normalizeLang(targetLangEl.value, 'zh-CN')
+  };
+  try {
+    await window.snapTranslate.setSettings(payload);
+  } catch (error) {
+    setStatus(`保存语言设置失败：${error.message || error}`, 'error');
+  }
 }
 
 async function doTranslate() {
@@ -24,7 +56,10 @@ async function doTranslate() {
   setStatus('翻译中…', '');
 
   try {
-    const result = await window.snapTranslate.translateText(text);
+    const result = await window.snapTranslate.translateText(text, {
+      sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
+      targetLang: normalizeLang(targetLangEl.value, 'zh-CN')
+    });
     if (!result.ok) {
       setStatus(`翻译失败：${result.error || '未知错误'}`, 'error');
       outputEl.textContent = '';
@@ -67,8 +102,13 @@ settingsBtn.addEventListener('click', async () => {
   }
 });
 
+sourceLangEl?.addEventListener('change', saveLangSettings);
+targetLangEl?.addEventListener('change', saveLangSettings);
+
 inputEl.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     doTranslate();
   }
 });
+
+loadSettings();

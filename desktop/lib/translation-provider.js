@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 
-const REQUEST_TIMEOUT_MS = Number(process.env.CLIENT_TRANSLATION_TIMEOUT_MS || 2200);
+const REQUEST_TIMEOUT_MS = Number(process.env.CLIENT_TRANSLATION_TIMEOUT_MS || 20000);
 const MAX_RETRIES = 1;
 
 const DEFAULTS = {
@@ -12,8 +12,12 @@ const DEFAULTS = {
 };
 
 function normalizeConfig(config) {
+  let engine = (config?.engine || DEFAULTS.engine || 'api').toLowerCase();
+  if (engine !== 'llm' && engine !== 'api') {
+    engine = 'api';
+  }
   return {
-    engine: (config?.engine || DEFAULTS.engine || 'api').toLowerCase(),
+    engine,
     translationApiUrl: config?.translationApiUrl || DEFAULTS.translationApiUrl,
     llmApiUrl: config?.llmApiUrl || DEFAULTS.llmApiUrl,
     llmApiKey: config?.llmApiKey || DEFAULTS.llmApiKey,
@@ -38,10 +42,29 @@ async function callTranslateApi(payload, config) {
       clearTimeout(timeout);
 
       if (!response.ok) {
+        let errorPayload = null;
+        try {
+          errorPayload = await response.json();
+        } catch {
+          errorPayload = null;
+        }
+        if (errorPayload?.error_code) {
+          const err = new Error(String(errorPayload.error_code));
+          err.code = errorPayload.error_code;
+          err.meta = errorPayload.missing_model || null;
+          throw err;
+        }
         throw new Error(`translation_api_${response.status}`);
       }
 
-      return await response.json();
+      const payloadJson = await response.json();
+      if (payloadJson?.error_code) {
+        const err = new Error(String(payloadJson.error_code));
+        err.code = payloadJson.error_code;
+        err.meta = payloadJson.missing_model || null;
+        throw err;
+      }
+      return payloadJson;
     } catch (error) {
       clearTimeout(timeout);
       if (error && error.name === 'AbortError') {
@@ -81,14 +104,14 @@ function parseModelPayload(content) {
 
 function toPrompt(input) {
   return [
-    'Translate each input text segment into Simplified Chinese.',
+    'Translate each input text segment into the target language.',
     'Return JSON only in this schema:',
     '{"items":[{"id":"string","translated_text":"string","confidence":0.0}]}',
     'Rules:',
     '- Keep item order and ids unchanged.',
     '- translated_text must be translation only, no notes.',
     '- confidence is 0..1 numeric estimate.',
-    '- If source is already Chinese, keep semantic meaning and polish lightly.',
+    '- If source is already in the target language, keep semantic meaning and polish lightly.',
     '',
     `source_lang=${input.source_lang || 'auto'}`,
     `target_lang=${input.target_lang || 'zh-CN'}`,

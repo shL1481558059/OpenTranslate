@@ -1,8 +1,9 @@
 const formEl = document.getElementById('settingsForm');
 const engineEl = document.getElementById('engine');
+const sourceLangEl = document.getElementById('sourceLang');
+const targetLangEl = document.getElementById('targetLang');
 const translationApiUrlEl = document.getElementById('translationApiUrl');
-const apiExposeLanEl = document.getElementById('apiExposeLan');
-const apiPortEl = document.getElementById('apiPort');
+const apiSectionEl = document.getElementById('apiSection');
 const llmApiUrlEl = document.getElementById('llmApiUrl');
 const llmApiKeyEl = document.getElementById('llmApiKey');
 const llmModelEl = document.getElementById('llmModel');
@@ -11,32 +12,29 @@ const llmFieldsEl = document.getElementById('llmFields');
 const statusEl = document.getElementById('status');
 const backBtn = document.getElementById('backBtn');
 let hotkeyBinding = false;
+let cachedApiUrl = '';
 
 function setStatus(message, type) {
   statusEl.textContent = message || '';
   statusEl.className = `status${type ? ` ${type}` : ''}`;
 }
 
-function toggleFields() {
-  if (engineEl.value === 'llm') {
-    llmFieldsEl.style.display = 'grid';
+function updateModeFields() {
+  const engine = engineEl.value;
+  llmFieldsEl.style.display = engine === 'llm' ? 'grid' : 'none';
+  apiSectionEl.style.display = engine === 'api' ? 'grid' : 'none';
+
+  if (engine === 'api') {
+    translationApiUrlEl.readOnly = false;
+    translationApiUrlEl.value = cachedApiUrl || '';
   } else {
-    llmFieldsEl.style.display = 'none';
+    translationApiUrlEl.readOnly = true;
   }
 }
 
-function normalizePort(value) {
-  const num = Number.parseInt(String(value || ''), 10);
-  if (!Number.isFinite(num) || num < 1 || num > 65535) {
-    return null;
-  }
-  return num;
-}
-
-function syncTranslationApiUrl() {
-  if (!apiPortEl || !translationApiUrlEl) return;
-  const port = normalizePort(apiPortEl.value) || 8787;
-  translationApiUrlEl.value = `http://127.0.0.1:${port}/v1/translate`;
+function normalizeLang(value, fallback) {
+  const trimmed = String(value || '').trim();
+  return trimmed || fallback;
 }
 
 function buildAccelerator(event) {
@@ -92,24 +90,27 @@ async function loadSettings() {
   try {
     const settings = await window.snapTranslate.getSettings();
     engineEl.value = settings.engine || 'api';
-    translationApiUrlEl.value = settings.translationApiUrl || '';
-    translationApiUrlEl.readOnly = true;
+    sourceLangEl.value = settings.sourceLang || 'auto';
+    targetLangEl.value = settings.targetLang || 'zh-CN';
+    cachedApiUrl = settings.translationApiUrl || '';
+    translationApiUrlEl.value = cachedApiUrl;
     llmApiUrlEl.value = settings.llmApiUrl || '';
     llmApiKeyEl.value = settings.llmApiKey || '';
     llmModelEl.value = settings.llmModel || '';
     hotkeyEl.value = settings.hotkey || '';
-    apiExposeLanEl.checked = settings.apiExposeLan !== false;
-    apiPortEl.value = settings.apiPort || 8787;
     hotkeyEl.readOnly = true;
-    syncTranslationApiUrl();
-    toggleFields();
+    updateModeFields();
   } catch (error) {
     setStatus('加载设置失败。', 'error');
   }
 }
 
-engineEl.addEventListener('change', toggleFields);
-apiPortEl?.addEventListener('input', syncTranslationApiUrl);
+engineEl.addEventListener('change', updateModeFields);
+translationApiUrlEl?.addEventListener('input', () => {
+  if (engineEl.value === 'api') {
+    cachedApiUrl = translationApiUrlEl.value.trim();
+  }
+});
 
 formEl.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -117,13 +118,15 @@ formEl.addEventListener('submit', async (event) => {
 
   const payload = {
     engine: engineEl.value,
-    translationApiUrl: translationApiUrlEl.value.trim(),
+    sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
+    targetLang: normalizeLang(targetLangEl.value, 'zh-CN'),
     llmApiUrl: llmApiUrlEl.value.trim(),
     llmApiKey: llmApiKeyEl.value.trim(),
-    llmModel: llmModelEl.value.trim(),
-    apiExposeLan: apiExposeLanEl.checked,
-    apiPort: normalizePort(apiPortEl.value) || 8787
+    llmModel: llmModelEl.value.trim()
   };
+  if (engineEl.value === 'api') {
+    payload.translationApiUrl = translationApiUrlEl.value.trim();
+  }
 
   const result = await window.snapTranslate.setSettings(payload);
   if (!result.ok) {

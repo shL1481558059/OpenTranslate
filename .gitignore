@@ -42,3 +42,4 @@ temp/
 
 # Project-specific
 models/argos/*.argosmodel
+api/model-cache.json

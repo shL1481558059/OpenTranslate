@@ -1,0 +1,21 @@
+{
+  "engine": "marian",
+  "local": {
+    "argosModelDir": "./models/argos",
+    "marianModelDir": "./models/marian",
+    "pythonPath": "./.venv-argos/bin/python",
+    "venvDir": "./.venv-argos",
+    "timeoutMs": 20000
+  },
+  "marian": {
+    "modelId": "Helsinki-NLP/opus-mt-en-zh",
+    "device": "cpu",
+    "dtype": "float32",
+    "maxTokens": 512,
+    "hfEndpoint": "",
+    "hfDisableSslVerify": false
+  },
+  "admin": {
+    "token": ""
+  }
+}

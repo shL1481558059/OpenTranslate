@@ -2,22 +2,22 @@ require('../load-env');
 
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeImage, Menu, Tray, dialog } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeImage, Menu, Tray } = require('electron');
 
 const APP_NAME = 'OpenTranslate';
 app.setName(APP_NAME);
 app.name = APP_NAME;
 
 const { captureRect, captureScreen, cleanupImage } = require('./lib/capture');
-const { startTranslationApi } = require('../api/server');
 const ocrProvider = require('./lib/ocr-provider');
 const translationProvider = require('./lib/translation-provider');
 const layoutEngine = require('./lib/layout-engine');
 
 const CAPTURE_DELAY_MS = Number(process.env.SNAP_TRANSLATE_CAPTURE_DELAY_MS || 280);
-const DEFAULT_API_PORT = Number(process.env.TRANSLATION_API_PORT || 8787);
+const DEFAULT_API_URL = process.env.TRANSLATION_API_URL || 'http://127.0.0.1:8787/v1/translate';
 const execFileAsync = promisify(execFile);
 
 let selectionWindow = null;
@@ -30,44 +30,38 @@ const appIconPath = path.join(__dirname, 'assets', 'app-icon-apple.png');
 const trayIconPath = path.join(__dirname, 'assets', 'tray-template-18.png');
 const trayIconPath2x = path.join(__dirname, 'assets', 'tray-template-36.png');
 let tray = null;
-let apiServer = null;
-let apiHost = null;
-let apiPort = null;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function normalizePort(value, fallback) {
-  const num = Number.parseInt(String(value || ''), 10);
-  if (!Number.isFinite(num) || num < 1 || num > 65535) {
-    return fallback;
-  }
-  return num;
+function normalizeLang(value, fallback) {
+  const trimmed = String(value || '').trim();
+  return trimmed || fallback;
 }
 
 function applyApiDefaults(next) {
-  const port = normalizePort(next.apiPort, DEFAULT_API_PORT);
-  const apiExposeLan = typeof next.apiExposeLan === 'boolean' ? next.apiExposeLan : true;
+  const translationApiUrl =
+    typeof next.translationApiUrl === 'string' && next.translationApiUrl.trim()
+      ? next.translationApiUrl.trim()
+      : DEFAULT_API_URL;
   return {
     ...next,
-    apiPort: port,
-    apiExposeLan,
-    translationApiUrl: `http://127.0.0.1:${port}/v1/translate`
+    translationApiUrl
   };
 }
 
 function getDefaultSettings() {
   const envEngine = String(process.env.DESKTOP_TRANSLATION_ENGINE || '').toLowerCase();
-  const apiPort = normalizePort(process.env.TRANSLATION_API_PORT, DEFAULT_API_PORT);
+  const normalizedEngine = envEngine === 'llm' ? 'llm' : 'api';
   return applyApiDefaults({
-    engine: envEngine === 'llm' ? 'llm' : 'api',
+    engine: normalizedEngine,
+    sourceLang: normalizeLang(process.env.SOURCE_LANG || '', 'auto'),
+    targetLang: normalizeLang(process.env.TARGET_LANG || '', 'zh-CN'),
     llmApiUrl: process.env.LLM_API_URL || 'https://api.openai.com/v1',
     llmApiKey: process.env.LLM_API_KEY || '',
     llmModel: process.env.LLM_MODEL || 'gpt-4o-mini',
-    hotkey: process.env.SNAP_TRANSLATE_HOTKEY || 'CommandOrControl+Shift+T',
-    apiExposeLan: true,
-    apiPort
+    hotkey: process.env.SNAP_TRANSLATE_HOTKEY || 'CommandOrControl+Shift+T'
   });
 }
 
@@ -98,21 +92,14 @@ function sanitizeSettings(input) {
   if (typeof input.llmModel === 'string') {
     next.llmModel = input.llmModel;
   }
+  if (typeof input.sourceLang === 'string') {
+    next.sourceLang = normalizeLang(input.sourceLang, 'auto');
+  }
+  if (typeof input.targetLang === 'string') {
+    next.targetLang = normalizeLang(input.targetLang, 'zh-CN');
+  }
   if (typeof input.hotkey === 'string') {
     next.hotkey = input.hotkey;
-  }
-  if (typeof input.apiExposeLan === 'boolean') {
-    next.apiExposeLan = input.apiExposeLan;
-  } else if (typeof input.apiExposeLan === 'string') {
-    const normalized = input.apiExposeLan.toLowerCase();
-    if (normalized === 'true' || normalized === '1') {
-      next.apiExposeLan = true;
-    } else if (normalized === 'false' || normalized === '0') {
-      next.apiExposeLan = false;
-    }
-  }
-  if (input.apiPort !== undefined) {
-    next.apiPort = normalizePort(input.apiPort, DEFAULT_API_PORT);
   }
   return next;
 }
@@ -160,120 +147,6 @@ function updateHotkey(nextHotkey) {
   }
   saveSettings({ hotkey: trimmed });
   return { ok: true };
-}
-
-function getUserModelDir() {
-  return path.join(app.getPath('userData'), 'models', 'argos');
-}
-
-function resolvePythonPath() {
-  if (process.env.LOCAL_TRANSLATE_PYTHON) {
-    return path.resolve(process.env.LOCAL_TRANSLATE_PYTHON);
-  }
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'venv-argos', 'bin', 'python');
-  }
-  return path.join(process.cwd(), '.venv-argos', 'bin', 'python');
-}
-
-function resolveDownloadScriptPath() {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'api', 'local', 'download_model.py');
-  }
-  return path.join(__dirname, '..', 'api', 'local', 'download_model.py');
-}
-
-function hasLocalModel(modelDir) {
-  try {
-    const entries = fs.readdirSync(modelDir);
-    return entries.some((name) => name.endsWith('.argosmodel'));
-  } catch {
-    return false;
-  }
-}
-
-async function ensureLocalModelReady(pythonPath, modelDir) {
-  if (hasLocalModel(modelDir)) {
-    return true;
-  }
-  fs.mkdirSync(modelDir, { recursive: true });
-  const scriptPath = resolveDownloadScriptPath();
-  try {
-    await execFileAsync(pythonPath, [scriptPath, modelDir], {
-      env: { ...process.env, LOCAL_TRANSLATE_MODEL_DIR: modelDir }
-    });
-    return hasLocalModel(modelDir);
-  } catch (error) {
-    console.error('[local-model] download failed', error);
-    if (app.isReady()) {
-      dialog.showMessageBox({
-        type: 'error',
-        message: '本地模型下载失败',
-        detail: '请检查网络连接后重试。'
-      });
-    }
-    return false;
-  }
-}
-
-function applyLocalApiEnv(nextSettings) {
-  const pythonPath = resolvePythonPath();
-  const modelDir = getUserModelDir();
-  process.env.TRANSLATION_ENGINE = 'local';
-  process.env.LOCAL_TRANSLATE_MODEL_DIR = modelDir;
-  process.env.LOCAL_TRANSLATE_PYTHON = pythonPath;
-  process.env.LOCAL_TRANSLATE_VENV = path.dirname(path.dirname(pythonPath));
-  process.env.LOCAL_TRANSLATE_TIMEOUT_MS = process.env.LOCAL_TRANSLATE_TIMEOUT_MS || '60000';
-  process.env.SNAP_TRANSLATE_IS_PACKAGED = app.isPackaged ? '1' : '0';
-  process.env.SNAP_TRANSLATE_RESOURCES_PATH = process.resourcesPath || '';
-  process.env.TRANSLATION_API_URL = `http://127.0.0.1:${nextSettings.apiPort}/v1/translate`;
-  return { pythonPath, modelDir };
-}
-
-let apiStarting = null;
-async function startLocalApi(nextSettings) {
-  if (apiServer || apiStarting) {
-    return apiStarting || { ok: true };
-  }
-  apiStarting = (async () => {
-    const host = nextSettings.apiExposeLan ? '0.0.0.0' : '127.0.0.1';
-    const port = normalizePort(nextSettings.apiPort, DEFAULT_API_PORT);
-    const { pythonPath, modelDir } = applyLocalApiEnv({ ...nextSettings, apiPort: port });
-    const ready = await ensureLocalModelReady(pythonPath, modelDir);
-    if (!ready) {
-      return { ok: false, error: 'model_not_ready' };
-    }
-    const result = await startTranslationApi({ host, port });
-    if (result.ok) {
-      apiServer = result.server;
-      apiHost = host;
-      apiPort = port;
-    } else if (result.alreadyRunning) {
-      apiHost = host;
-      apiPort = port;
-    }
-    return result;
-  })();
-  try {
-    return await apiStarting;
-  } finally {
-    apiStarting = null;
-  }
-}
-
-async function stopLocalApi() {
-  if (!apiServer) {
-    return;
-  }
-  await new Promise((resolve) => {
-    apiServer.close(() => resolve());
-  });
-  apiServer = null;
-}
-
-async function restartLocalApi(nextSettings) {
-  await stopLocalApi();
-  return startLocalApi(nextSettings);
 }
 
 function averageColorFromBitmap(bitmap, imageWidth, imageHeight, rect, grid = 8) {
@@ -425,6 +298,148 @@ function configureSelectionWindow(win) {
   win.setSimpleFullScreen(true);
 }
 
+function resolveWindowListScriptPath() {
+  const local = path.join(__dirname, 'scripts', 'window_list.swift');
+  if (!app || !app.isPackaged) {
+    return local;
+  }
+  const unpacked = path.join(
+    process.resourcesPath,
+    'app.asar.unpacked',
+    'desktop',
+    'scripts',
+    'window_list.swift'
+  );
+  if (fs.existsSync(unpacked)) {
+    return unpacked;
+  }
+  const resources = path.join(process.resourcesPath, 'desktop', 'scripts', 'window_list.swift');
+  if (fs.existsSync(resources)) {
+    return resources;
+  }
+  return local;
+}
+
+function resolveVisionRectsScriptPath() {
+  const local = path.join(__dirname, 'scripts', 'vision_rects.swift');
+  if (!app || !app.isPackaged) {
+    return local;
+  }
+  const unpacked = path.join(
+    process.resourcesPath,
+    'app.asar.unpacked',
+    'desktop',
+    'scripts',
+    'vision_rects.swift'
+  );
+  if (fs.existsSync(unpacked)) {
+    return unpacked;
+  }
+  const resources = path.join(process.resourcesPath, 'desktop', 'scripts', 'vision_rects.swift');
+  if (fs.existsSync(resources)) {
+    return resources;
+  }
+  return local;
+}
+
+function rectIntersects(a, b) {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  );
+}
+
+async function listWindowBounds(display) {
+  const scriptPath = resolveWindowListScriptPath();
+  try {
+    const { stdout } = await execFileAsync('xcrun', ['swift', scriptPath], {
+      maxBuffer: 1024 * 1024 * 4
+    });
+    const parsed = JSON.parse(stdout);
+    let windows = Array.isArray(parsed?.windows) ? parsed.windows : [];
+    const requiresAccessibility = !!parsed?.requires_accessibility;
+    const requiresScreenRecording = !!parsed?.requires_screen_recording;
+    if (display?.bounds) {
+      const bounds = display.bounds;
+      windows = windows.filter((item) =>
+        rectIntersects(
+          {
+            x: Number(item.x || 0),
+            y: Number(item.y || 0),
+            width: Number(item.width || 0),
+            height: Number(item.height || 0)
+          },
+          bounds
+        )
+      );
+    }
+    return { windows, requiresAccessibility, requiresScreenRecording };
+  } catch (error) {
+    console.warn('[desktop] window list unavailable', error?.message || error);
+    return { windows: [], requiresAccessibility: false, requiresScreenRecording: false };
+  }
+}
+
+async function captureDisplayImage(display) {
+  const scaleFactor = display?.scaleFactor || 1;
+  const bounds = display?.bounds || { x: 0, y: 0, width: 0, height: 0 };
+  const x = Math.round(bounds.x * scaleFactor);
+  const y = Math.round(bounds.y * scaleFactor);
+  const width = Math.round(bounds.width * scaleFactor);
+  const height = Math.round(bounds.height * scaleFactor);
+  const imagePath = path.join(os.tmpdir(), `snap-translate-window-${Date.now()}-${Math.random().toString(16).slice(2)}.png`);
+  await execFileAsync('screencapture', ['-x', '-R', `${x},${y},${width},${height}`, imagePath]);
+  return { imagePath, scaleFactor, bounds };
+}
+
+async function detectWindowRects(display) {
+  const scriptPath = resolveVisionRectsScriptPath();
+  let capture = null;
+  try {
+    capture = await captureDisplayImage(display);
+    const { stdout } = await execFileAsync('xcrun', ['swift', scriptPath, capture.imagePath], {
+      maxBuffer: 1024 * 1024 * 4
+    });
+    const parsed = JSON.parse(stdout);
+    const rects = Array.isArray(parsed?.rects) ? parsed.rects : [];
+    return rects
+      .map((rect, index) => {
+        const width = Number(rect.width || 0) / capture.scaleFactor;
+        const height = Number(rect.height || 0) / capture.scaleFactor;
+        return {
+          id: rect.id || `vision-${index + 1}`,
+          x: capture.bounds.x + Number(rect.x || 0) / capture.scaleFactor,
+          y: capture.bounds.y + Number(rect.y || 0) / capture.scaleFactor,
+          width,
+          height
+        };
+      })
+      .filter((rect) => rect.width > 120 && rect.height > 80);
+  } catch (error) {
+    console.warn('[desktop] vision window detect failed', error?.message || error);
+    return [];
+  } finally {
+    if (capture?.imagePath) {
+      await cleanupImage(capture.imagePath);
+    }
+  }
+}
+
+async function getSnapWindows(display) {
+  const result = await listWindowBounds(display);
+  if (result.windows.length) {
+    return result;
+  }
+  const vision = await detectWindowRects(display);
+  return {
+    windows: vision,
+    requiresAccessibility: result.requiresAccessibility,
+    requiresScreenRecording: result.requiresScreenRecording
+  };
+}
+
 async function renderOverlayMessage(rect, message, styleHint = {}, options = {}) {
   const win = await ensureOverlayWindowReady();
   win.setBounds({
@@ -526,7 +541,7 @@ function createSelectionWindow() {
     y: display.bounds.y,
     width: display.bounds.width,
     height: display.bounds.height,
-    show: true,
+    show: false,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -544,6 +559,26 @@ function createSelectionWindow() {
 
   configureSelectionWindow(selectionWindow);
   selectionWindow.loadFile(path.join(__dirname, 'ui', 'selection.html'));
+  selectionWindow.webContents.once('did-finish-load', async () => {
+    try {
+      const { windows, requiresAccessibility, requiresScreenRecording } = await getSnapWindows(display);
+      selectionWindow.webContents.send('selection:windows', {
+        windows,
+        displayBounds: display.bounds,
+        requiresAccessibility,
+        requiresScreenRecording
+      });
+    } catch {
+      // ignore
+    }
+  });
+  selectionWindow.once('ready-to-show', () => {
+    if (!selectionWindow || selectionWindow.isDestroyed()) {
+      return;
+    }
+    selectionWindow.show();
+    selectionWindow.focus();
+  });
   selectionWindow.on('closed', () => {
     selectionWindow = null;
   });
@@ -567,7 +602,7 @@ function ensureTranslateWindow() {
     resizable: true,
     title: 'Manual Translate',
     frame: true,
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: 'hidden',
     transparent: true,
     backgroundColor: '#00000000',
     icon: appIconPath,
@@ -607,6 +642,20 @@ function setupMenu() {
         { label: 'Settings…', click: showSettingsWindow },
         { type: 'separator' },
         { role: 'quit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'pasteAndMatchStyle' },
+        { role: 'delete' },
+        { role: 'selectAll' }
       ]
     }
   ];
@@ -791,7 +840,9 @@ async function runPipeline(rect) {
       return;
     }
 
-    const translatedItems = await translationProvider.translateBlocks(scaledBlocks, 'auto', 'zh-CN', settings);
+    const sourceLang = settings?.sourceLang || 'auto';
+    const targetLang = settings?.targetLang || 'zh-CN';
+    const translatedItems = await translationProvider.translateBlocks(scaledBlocks, sourceLang, targetLang, settings);
     const renderBlocks = layoutEngine.mapBlocks(scaledBlocks, translatedItems);
     const sampled = sampleOverlayColors(imagePath, mapRectToImage, absoluteRect, scaledBlocks);
     if (sampled) {
@@ -826,7 +877,9 @@ async function runPipeline(rect) {
   } catch (error) {
     const message = String(error && error.message ? error.message : error);
     const isTimeout = message === 'timeout' || /aborted|timeout/i.test(message);
-    const friendly = isTimeout ? '翻译超时，请稍后重试。' : `翻译失败，可重试\n${message}`;
+    const friendly = isTimeout
+      ? '翻译超时，请稍后重试。'
+      : `翻译失败，可重试\n${message}`;
     const win = await ensureOverlayWindowReady();
     win.setBounds({
       x: absoluteRect.x,
@@ -872,8 +925,13 @@ app.whenReady().then(async () => {
       if (app.setActivationPolicy) {
         app.setActivationPolicy('accessory');
       }
-    } else if (app.setActivationPolicy) {
-      app.setActivationPolicy('regular');
+    } else {
+      if (app.setActivationPolicy) {
+        app.setActivationPolicy('regular');
+      }
+      if (app.dock && app.dock.show) {
+        app.dock.show();
+      }
     }
     if (app.dock && app.dock.setIcon) {
       app.dock.setIcon(appIconPath);
@@ -883,7 +941,6 @@ app.whenReady().then(async () => {
   settings = loadSettings();
   setupMenu();
   ensureTray();
-  await startLocalApi(settings);
 
   const ok = registerHotkey(settings.hotkey);
   if (!ok) {
@@ -906,13 +963,16 @@ app.whenReady().then(async () => {
     }
     let targetRect = rect;
     if (rect.click) {
-      const display = screen.getDisplayNearestPoint({ x: rect.x, y: rect.y }) || screen.getPrimaryDisplay();
-      targetRect = {
-        x: display.bounds.x,
-        y: display.bounds.y,
-        width: display.bounds.width,
-        height: display.bounds.height
-      };
+      if (rect.snapped === 'window' && rect.width > 6 && rect.height > 6) {
+        targetRect = {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        };
+      } else {
+        return;
+      }
     } else if (rect.width < 6 || rect.height < 6) {
       return;
     }
@@ -943,8 +1003,6 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('settings:set', async (_, next) => {
     const payload = sanitizeSettings(next);
-    const prevPort = settings.apiPort;
-    const prevExpose = settings.apiExposeLan;
     let hotkeyError = null;
     if (payload.hotkey && payload.hotkey !== settings.hotkey) {
       const result = updateHotkey(payload.hotkey);
@@ -954,9 +1012,6 @@ app.whenReady().then(async () => {
       }
     }
     saveSettings(payload);
-    if (settings.apiPort !== prevPort || settings.apiExposeLan !== prevExpose) {
-      await restartLocalApi(settings);
-    }
     return { ok: !hotkeyError, error: hotkeyError, settings };
   });
 
@@ -968,7 +1023,9 @@ app.whenReady().then(async () => {
       return { ok: false, error: 'empty_text' };
     }
     try {
-      const result = await translationProvider.translateText(text, 'auto', 'zh-CN', settings);
+      const sourceLang = normalizeLang(payload?.sourceLang, settings?.sourceLang || 'auto');
+      const targetLang = normalizeLang(payload?.targetLang, settings?.targetLang || 'zh-CN');
+      const result = await translationProvider.translateText(text, sourceLang, targetLang, settings);
       return { ok: true, text: result.text, confidence: result.confidence };
     } catch (error) {
       return { ok: false, error: String(error.message || error) };
@@ -993,11 +1050,4 @@ app.on('window-all-closed', (event) => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
-  if (apiServer) {
-    try {
-      apiServer.close();
-    } catch {
-      // ignore
-    }
-  }
 });

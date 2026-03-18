@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenTranslate API 管理</title>
+    <link rel="stylesheet" href="/admin/assets/admin.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="label">OpenTranslate API</p>
+          <h1>后台配置管理</h1>
+          <p class="desc">在同一处管理引擎、路径与本地模型，让 API 行为可控且可复用。</p>
+        </div>
+        <div class="hero-actions">
+          <div id="status" class="status">等待操作</div>
+          <div class="actions">
+            <button id="reloadBtn" type="button" class="ghost">刷新配置</button>
+            <button id="refreshModelsBtn" type="button" class="ghost">刷新模型列表</button>
+            <button id="saveBtn" type="button">保存配置</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="layout">
+        <aside class="sidebar">
+          <section class="card card--engine">
+            <div class="section-title">
+              <h2>默认引擎</h2>
+              <p>翻译请求未指定时默认使用。</p>
+            </div>
+            <label class="field">
+              <span>Engine</span>
+              <select id="engineSelect">
+                <option value="argos">Argos</option>
+                <option value="marian">Marian / OPUS‑MT</option>
+              </select>
+            </label>
+          </section>
+
+          <section class="card" id="marianParamsCard">
+            <div class="section-title">
+              <h2>Marian 参数</h2>
+              <p>控制默认模型与推理表现。</p>
+            </div>
+            <label class="field">
+              <span>默认模型 ID</span>
+              <input id="marianModelId" type="text" placeholder="Helsinki-NLP/opus-mt-en-zh" />
+            </label>
+            <label class="field">
+              <span>模型源</span>
+              <input id="marianEndpoint" type="text" placeholder="https://huggingface.co 或 https://hf-mirror.com" />
+            </label>
+            <label class="field field--toggle">
+              <span>跳过 SSL 校验</span>
+              <input id="marianDisableSsl" type="checkbox" />
+            </label>
+            <div class="grid">
+              <label class="field">
+                <span>设备</span>
+                <input id="marianDevice" type="text" placeholder="cpu / cuda" />
+              </label>
+              <label class="field">
+                <span>精度</span>
+                <input id="marianDtype" type="text" placeholder="float32 / float16" />
+              </label>
+              <label class="field">
+                <span>最大新 token</span>
+                <input id="marianMaxTokens" type="number" min="16" step="16" />
+              </label>
+            </div>
+          </section>
+        </aside>
+
+        <section class="content">
+          <section class="card" id="argosModelsCard">
+            <div class="section-title">
+              <h2>Argos 模型</h2>
+              <p>适合快速本地翻译，模型体积小。</p>
+            </div>
+            <div class="list-group">
+              <h3>已安装</h3>
+              <div class="list" id="argosInstalled"></div>
+            </div>
+            <div class="list-group">
+              <h3>可下载</h3>
+              <div class="list" id="argosAvailable"></div>
+            </div>
+          </section>
+
+          <section class="card" id="marianModelsCard">
+            <div class="section-title">
+              <h2>Marian / OPUS‑MT 模型</h2>
+              <p>适合语种覆盖更广的场景。</p>
+            </div>
+            <div class="field-inline" id="marianCustomRow">
+              <input id="customMarianId" type="text" placeholder="Helsinki-NLP/opus-mt-en-zh" />
+              <button id="downloadCustomMarian" type="button">下载</button>
+            </div>
+            <div class="list-group">
+              <h3>已安装</h3>
+              <div class="list" id="marianInstalled"></div>
+            </div>
+            <div class="list-group">
+              <h3>可下载</h3>
+              <div class="list" id="marianAvailable"></div>
+            </div>
+          </section>
+        </section>
+      </div>
+    </main>
+
+    <script src="/admin/assets/admin.js"></script>
+  </body>
+</html>

@@ -7,7 +7,7 @@
   --line: rgba(205, 205, 205, 0.85);
   --accent: #1f2a20;
   --accent-soft: #374039;
-  --titlebar-offset: 28px;
+  --titlebar-offset: 32px;
 }
 
 * {
@@ -21,14 +21,17 @@ body {
   color: var(--ink);
   background: var(--bg);
   min-height: 100vh;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .page {
   max-width: 860px;
-  margin: 0 auto;
-  padding: calc(16px + var(--titlebar-offset)) 18px 24px;
-  min-height: 100vh;
+  margin: calc(var(--titlebar-offset) + env(safe-area-inset-top)) auto 0;
+  padding: 16px calc(18px + env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom))
+    calc(18px + env(safe-area-inset-left));
+  height: calc(100vh - var(--titlebar-offset) - env(safe-area-inset-top));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -40,6 +43,12 @@ body {
   align-items: flex-start;
   gap: 16px;
   flex-wrap: wrap;
+  -webkit-app-region: drag;
+}
+
+.top button,
+.top a {
+  -webkit-app-region: no-drag;
 }
 
 .label {
@@ -169,6 +178,7 @@ select {
 
 @media (max-width: 720px) {
   .page {
-    padding: calc(14px + var(--titlebar-offset)) 14px 20px;
+    padding: 14px calc(14px + env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom))
+      calc(14px + env(safe-area-inset-left));
   }
 }

@@ -6,16 +6,8 @@ const readline = require('node:readline');
 
 const execFileAsync = promisify(execFile);
 
-const MODEL_DIR = path.resolve(process.env.LOCAL_TRANSLATE_MODEL_DIR || path.join(process.cwd(), 'models', 'argos'));
-const VENV_DIR = path.resolve(process.env.LOCAL_TRANSLATE_VENV || path.join(process.cwd(), '.venv'));
-const PYTHON_PATH = path.resolve(process.env.LOCAL_TRANSLATE_PYTHON || path.join(VENV_DIR, 'bin', 'python'));
-const TIMEOUT_MS = Number(process.env.LOCAL_TRANSLATE_TIMEOUT_MS || 20000);
 const REQUIREMENTS_PATH = path.resolve(__dirname, 'requirements.txt');
-const IS_PACKAGED = process.env.SNAP_TRANSLATE_IS_PACKAGED === '1';
-const RESOURCES_PATH = process.env.SNAP_TRANSLATE_RESOURCES_PATH || process.resourcesPath || '';
-const WORKER_PATH = IS_PACKAGED && RESOURCES_PATH
-  ? path.join(RESOURCES_PATH, 'api', 'local', 'argos_worker.py')
-  : path.resolve(__dirname, 'argos_worker.py');
+let currentConfig = null;
 
 let initPromise = null;
 let worker = null;
@@ -23,15 +15,64 @@ let rl = null;
 let pending = [];
 let chain = Promise.resolve();
 
+function getRuntimeConfig() {
+  const modelDir = path.resolve(process.env.LOCAL_TRANSLATE_MODEL_DIR || path.join(process.cwd(), 'models', 'argos'));
+  const xdgRoot = path.join(modelDir, '.xdg');
+  const xdgData = path.join(xdgRoot, 'data');
+  const xdgCache = path.join(xdgRoot, 'cache');
+  const xdgConfig = path.join(xdgRoot, 'config');
+  const venvDir = path.resolve(process.env.LOCAL_TRANSLATE_VENV || path.join(process.cwd(), '.venv'));
+  const pythonPath = path.resolve(process.env.LOCAL_TRANSLATE_PYTHON || path.join(venvDir, 'bin', 'python'));
+  const timeoutMs = Number(process.env.LOCAL_TRANSLATE_TIMEOUT_MS || 20000);
+  const isPackaged = process.env.SNAP_TRANSLATE_IS_PACKAGED === '1';
+  const resourcesPath = process.env.SNAP_TRANSLATE_RESOURCES_PATH || process.resourcesPath || '';
+  const workerPath = isPackaged && resourcesPath
+    ? path.join(resourcesPath, 'api', 'local', 'argos_worker.py')
+    : path.resolve(__dirname, 'argos_worker.py');
+  return {
+    modelDir,
+    xdgRoot,
+    xdgData,
+    xdgCache,
+    xdgConfig,
+    venvDir,
+    pythonPath,
+    timeoutMs,
+    workerPath
+  };
+}
+
+function ensureConfig() {
+  const next = getRuntimeConfig();
+  const changed =
+    !currentConfig ||
+    currentConfig.modelDir !== next.modelDir ||
+    currentConfig.venvDir !== next.venvDir ||
+    currentConfig.pythonPath !== next.pythonPath ||
+    currentConfig.workerPath !== next.workerPath;
+  if (changed) {
+    currentConfig = next;
+    initPromise = null;
+    resetWorker('config_changed');
+  } else {
+    currentConfig = next;
+  }
+  return currentConfig;
+}
+
 async function ensureVenv() {
+  const config = ensureConfig();
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    if (!existsSync(MODEL_DIR)) {
-      mkdirSync(MODEL_DIR, { recursive: true });
+    if (!existsSync(config.modelDir)) {
+      mkdirSync(config.modelDir, { recursive: true });
     }
-    if (!existsSync(PYTHON_PATH)) {
-      await execFileAsync('python3', ['-m', 'venv', VENV_DIR]);
-      await execFileAsync(PYTHON_PATH, ['-m', 'pip', 'install', '-r', REQUIREMENTS_PATH]);
+    mkdirSync(config.xdgData, { recursive: true });
+    mkdirSync(config.xdgCache, { recursive: true });
+    mkdirSync(config.xdgConfig, { recursive: true });
+    if (!existsSync(config.pythonPath)) {
+      await execFileAsync('python3', ['-m', 'venv', config.venvDir]);
+      await execFileAsync(config.pythonPath, ['-m', 'pip', 'install', '-r', REQUIREMENTS_PATH]);
     }
   })();
   return initPromise;
@@ -58,9 +99,16 @@ function resetWorker(reason) {
 }
 
 function ensureWorker() {
+  const config = ensureConfig();
   if (worker) return;
-  worker = spawn(PYTHON_PATH, [WORKER_PATH], {
-    env: { ...process.env, LOCAL_TRANSLATE_MODEL_DIR: MODEL_DIR },
+  worker = spawn(config.pythonPath, [config.workerPath], {
+    env: {
+      ...process.env,
+      LOCAL_TRANSLATE_MODEL_DIR: config.modelDir,
+      XDG_DATA_HOME: config.xdgData,
+      XDG_CACHE_HOME: config.xdgCache,
+      XDG_CONFIG_HOME: config.xdgConfig
+    },
     stdio: ['pipe', 'pipe', 'pipe']
   });
 
@@ -96,10 +144,11 @@ function ensureWorker() {
 
 function sendPayload(payload) {
   return new Promise((resolve, reject) => {
+    const config = currentConfig || ensureConfig();
     const timer = setTimeout(() => {
       reject(new Error('timeout'));
       resetWorker('timeout');
-    }, TIMEOUT_MS);
+    }, config.timeoutMs);
 
     pending.push({
       resolve: (data) => {

@@ -7,6 +7,16 @@
   </head>
   <body>
     <div id="hint">Drag to select area. Press ESC to cancel.</div>
+    <svg id="mask" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <mask id="mask-holes" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="0" height="0">
+          <rect id="mask-base" x="0" y="0" width="0" height="0" fill="white" />
+          <g id="mask-holes-group"></g>
+        </mask>
+      </defs>
+      <rect id="mask-rect" x="0" y="0" width="0" height="0" fill="rgba(20, 20, 20, 0.4)" mask="url(#mask-holes)" />
+      <g id="mask-outline"></g>
+    </svg>
     <div id="selection"></div>
     <script src="./selection.js"></script>
   </body>

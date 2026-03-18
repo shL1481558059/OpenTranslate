@@ -24,14 +24,17 @@
       "icon": "desktop/assets/app-icon.icns"
     },
     "asar": true,
-    "asarUnpack": [
-      "api/local/**"
+    "files": [
+      "**/*",
+      "!api/**",
+      "!models/**",
+      "!scripts/prepare-python-runtime.js",
+      "!.venv-argos/**",
+      "!.venv311/**",
+      "!tests/**"
     ],
-    "extraResources": [
-      {
-        "from": ".venv-argos",
-        "to": "venv-argos"
-      }
+    "asarUnpack": [
+      "desktop/scripts/**"
     ]
   },
   "dependencies": {},

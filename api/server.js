@@ -2,29 +2,84 @@ require('../load-env');
 
 const http = require('node:http');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const PORT = Number(process.env.TRANSLATION_API_PORT || 8787);
 const HOST = process.env.TRANSLATION_API_HOST || '127.0.0.1';
-const LLM_API_URL = process.env.LLM_API_URL || 'https://api.openai.com/v1';
-const LLM_API_KEY = process.env.LLM_API_KEY || '';
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
-const LLM_API_MODE = (process.env.LLM_API_MODE || 'chat').toLowerCase();
-const LLM_RESPONSES_FORMAT = process.env.LLM_RESPONSES_FORMAT === '1';
-const REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 1800);
-const MAX_RETRIES = 1;
-const TRANSLATION_ENGINE = (process.env.TRANSLATION_ENGINE || 'llm').toLowerCase();
 const LOCAL_MODEL_NAME = process.env.LOCAL_TRANSLATE_MODEL_NAME || 'argos-local';
 
+const { getConfig, updateConfig, loadConfig, getAdminToken, writeJsonAtomic } = require('./config');
 const localArgos = require('./local/argos_client');
+const marianClient = require('./local/marian_client');
+const argosManager = require('./local/argos_manager');
+const marianManager = require('./local/marian_manager');
+
+const ADMIN_UI_DIR = path.resolve(__dirname, 'admin');
+const ADMIN_ASSETS_DIR = path.join(ADMIN_UI_DIR, 'assets');
+const MODEL_CACHE_PATH = path.resolve(__dirname, 'model-cache.json');
 
 const SERVER_ERROR = {
   bad_request: 400,
+  missing_model: 409,
   auth_required: 401,
   rate_limited: 429,
   provider_down: 503,
   timeout: 504,
   internal_error: 500
 };
+
+const MARIAN_RECOMMENDED = [
+  { model_id: 'Helsinki-NLP/opus-mt-en-zh', from: 'en', to: 'zh' },
+  { model_id: 'Helsinki-NLP/opus-mt-zh-en', from: 'zh', to: 'en' },
+  { model_id: 'Helsinki-NLP/opus-mt-en-ja', from: 'en', to: 'ja' },
+  { model_id: 'Helsinki-NLP/opus-mt-ja-en', from: 'ja', to: 'en' },
+  { model_id: 'Helsinki-NLP/opus-mt-en-ko', from: 'en', to: 'ko' },
+  { model_id: 'Helsinki-NLP/opus-mt-ko-en', from: 'ko', to: 'en' },
+  { model_id: 'Helsinki-NLP/opus-mt-en-fr', from: 'en', to: 'fr' },
+  { model_id: 'Helsinki-NLP/opus-mt-fr-en', from: 'fr', to: 'en' }
+];
+
+function parseBoolean(value) {
+  const normalized = String(value || '').toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
+}
+
+function loadModelCache() {
+  try {
+    const raw = fs.readFileSync(MODEL_CACHE_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+function updateModelCache(cache, engine, available) {
+  const next = { ...(cache || {}) };
+  next[engine] = {
+    available: Array.isArray(available) ? available : [],
+    updatedAt: new Date().toISOString()
+  };
+  writeJsonAtomic(MODEL_CACHE_PATH, next);
+  return next[engine];
+}
+
+function getCachedAvailable(cache, engine) {
+  const entry = cache?.[engine];
+  if (!entry || !Array.isArray(entry.available)) return null;
+  return entry;
+}
+
+function normalizeEngine(engine, fallback = 'argos') {
+  const normalized = String(engine || '').toLowerCase();
+  if (normalized === 'local' || normalized === 'argos') return 'argos';
+  if (normalized === 'marian') return 'marian';
+  return fallback;
+}
 
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -33,6 +88,55 @@ function jsonResponse(res, status, payload) {
     'Content-Length': Buffer.byteLength(body)
   });
   res.end(body);
+}
+
+function textResponse(res, status, body, contentType = 'text/plain; charset=utf-8') {
+  const text = String(body || '');
+  res.writeHead(status, {
+    'Content-Type': contentType,
+    'Content-Length': Buffer.byteLength(text)
+  });
+  res.end(text);
+}
+
+function sendFile(res, filePath, contentType) {
+  try {
+    const data = fs.readFileSync(filePath);
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': data.length
+    });
+    res.end(data);
+  } catch {
+    jsonResponse(res, 404, { error_code: 'not_found' });
+  }
+}
+
+function extractAdminToken(req, url) {
+  const header = req.headers['authorization'] || '';
+  if (header.startsWith('Bearer ')) {
+    return header.slice(7).trim();
+  }
+  if (req.headers['x-admin-token']) {
+    return String(req.headers['x-admin-token']).trim();
+  }
+  if (url?.searchParams?.get('token')) {
+    return url.searchParams.get('token').trim();
+  }
+  return '';
+}
+
+function ensureAdmin(req, res, url) {
+  const token = getAdminToken();
+  if (!token) {
+    return true;
+  }
+  const provided = extractAdminToken(req, url);
+  if (provided && provided === token) {
+    return true;
+  }
+  jsonResponse(res, SERVER_ERROR.auth_required, { error_code: 'auth_required', message: 'ADMIN_TOKEN required' });
+  return false;
 }
 
 function readJsonBody(req) {
@@ -51,27 +155,6 @@ function readJsonBody(req) {
   });
 }
 
-function stripCodeFence(text) {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('```')) {
-    return trimmed;
-  }
-  return trimmed.replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
-}
-
-function parseModelPayload(content) {
-  const normalized = stripCodeFence(content);
-  const parsed = JSON.parse(normalized);
-  if (!parsed || !Array.isArray(parsed.items)) {
-    throw new Error('invalid_model_payload');
-  }
-  return parsed.items.map((item) => ({
-    id: String(item.id || ''),
-    translated_text: String(item.translated_text || ''),
-    confidence: Number.isFinite(item.confidence) ? Number(item.confidence) : 0.8
-  }));
-}
-
 function validateTranslateRequest(body) {
   if (!body || typeof body !== 'object') {
     return 'invalid body';
@@ -87,25 +170,31 @@ function validateTranslateRequest(body) {
   return null;
 }
 
-function toPrompt(input) {
-  return [
-    'Translate each input text segment into Simplified Chinese.',
-    'Return JSON only in this schema:',
-    '{"items":[{"id":"string","translated_text":"string","confidence":0.0}]}',
-    'Rules:',
-    '- Keep item order and ids unchanged.',
-    '- translated_text must be translation only, no notes.',
-    '- confidence is 0..1 numeric estimate.',
-    '- If source is already Chinese, keep semantic meaning and polish lightly.',
-    '',
-    `source_lang=${input.source_lang || 'auto'}`,
-    `target_lang=${input.target_lang || 'zh-CN'}`,
-    `items=${JSON.stringify(input.items)}`
-  ].join('\n');
+function extractMissingModel(error) {
+  const message = String(error?.message || error || '');
+  const marianMarker = 'missing_model:';
+  const marianIdx = message.indexOf(marianMarker);
+  if (marianIdx >= 0) {
+    const modelId = message.slice(marianIdx + marianMarker.length).trim();
+    return modelId ? { model_id: modelId } : { model_id: null };
+  }
+  const marker = 'no_translation_pair:';
+  const idx = message.indexOf(marker);
+  if (idx < 0) {
+    return null;
+  }
+  const pair = message.slice(idx + marker.length).trim();
+  const [from, to] = pair.split('->').map((item) => item.trim());
+  if (!from || !to) {
+    return null;
+  }
+  return { from, to };
 }
 
 function mapProviderErrorStatus(error) {
   const message = String(error.message || '');
+  if (message.includes('missing_model:')) return SERVER_ERROR.missing_model;
+  if (message.includes('no_translation_pair:')) return SERVER_ERROR.missing_model;
   if (message.includes('auth')) return SERVER_ERROR.auth_required;
   if (message.includes('429') || message.includes('rate')) return SERVER_ERROR.rate_limited;
   if (message.includes('timeout')) return SERVER_ERROR.timeout;
@@ -127,159 +216,23 @@ function normalizeArgosLang(lang, fallback) {
   return normalized.split('-')[0] || fallback;
 }
 
-function extractResponseText(payload) {
-  if (payload && typeof payload.output_text === 'string') {
-    return payload.output_text;
-  }
-  const output = Array.isArray(payload?.output) ? payload.output : [];
-  for (const item of output) {
-    const content = Array.isArray(item?.content) ? item.content : [];
-    for (const part of content) {
-      if (typeof part?.text === 'string') {
-        return part.text;
-      }
-    }
-  }
-  const legacy = payload?.choices?.[0]?.message?.content;
-  if (typeof legacy === 'string') {
-    return legacy;
-  }
-  return '';
+function encodeMarianModelId(modelId) {
+  return String(modelId || '').replace(/[^a-zA-Z0-9._-]+/g, '_');
 }
 
-async function callResponsesApi(input, startedAt, signal) {
-  const makeBody = (withFormat) =>
-    JSON.stringify({
-      model: LLM_MODEL,
-      temperature: 0,
-      response_format: withFormat ? { type: 'json_object' } : undefined,
-      instructions: 'You are a translation engine. Output strict JSON only.',
-      input: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: toPrompt(input)
-            }
-          ]
-        }
-      ]
-    });
-
-  let response = await fetch(`${LLM_API_URL}/responses`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${LLM_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    signal,
-    body: makeBody(LLM_RESPONSES_FORMAT)
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`provider_${response.status}: ${text.slice(0, 120)}`);
-  }
-
-  const payload = await response.json();
-  const content = extractResponseText(payload);
-  if (!content) {
-    throw new Error('invalid_provider_response');
-  }
-
-  const translatedItems = parseModelPayload(content);
-  return {
-    translatedItems,
-    latencyMs: Date.now() - startedAt
-  };
+function resolveMarianModelDir(config, modelId) {
+  const root = config?.local?.marianModelDir || path.join(process.cwd(), 'models', 'marian');
+  return path.resolve(root, encodeMarianModelId(modelId));
 }
 
-async function callChatCompletionsApi(input, startedAt, signal) {
-  const response = await fetch(`${LLM_API_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${LLM_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    signal,
-    body: JSON.stringify({
-      model: LLM_MODEL,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a translation engine. Output strict JSON only.'
-        },
-        {
-          role: 'user',
-          content: toPrompt(input)
-        }
-      ]
-    })
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`provider_${response.status}: ${text.slice(0, 120)}`);
-  }
-
-  const payload = await response.json();
-  const content = extractResponseText(payload);
-  if (!content) {
-    throw new Error('invalid_provider_response');
-  }
-
-  const translatedItems = parseModelPayload(content);
-  return {
-    translatedItems,
-    latencyMs: Date.now() - startedAt
-  };
-}
-
-async function callSmallLlmTranslate(input) {
-  if (!LLM_API_KEY) {
-    throw new Error('auth_required: missing LLM_API_KEY');
-  }
-
-  const startedAt = Date.now();
-  let lastError = null;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
-      let result;
-      if (LLM_API_MODE === 'responses') {
-        result = await callResponsesApi(input, startedAt, controller.signal);
-      } else if (LLM_API_MODE === 'chat') {
-        result = await callChatCompletionsApi(input, startedAt, controller.signal);
-      } else {
-        result = await callChatCompletionsApi(input, startedAt, controller.signal);
-      }
-      clearTimeout(timeout);
-      return result;
-    } catch (error) {
-      clearTimeout(timeout);
-      lastError = error;
-      const isAbort = error && error.name === 'AbortError';
-      const message = String(error.message || '');
-      if (LLM_API_MODE !== 'responses' && message.includes('Unsupported legacy protocol')) {
-        try {
-          const result = await callResponsesApi(input, startedAt, controller.signal);
-          return result;
-        } catch (innerError) {
-          lastError = innerError;
-        }
-      }
-      if (attempt === MAX_RETRIES) {
-        throw new Error(isAbort ? 'timeout' : String(error.message || 'provider_down'));
-      }
-    }
-  }
-
-  throw lastError || new Error('provider_down');
+function contentTypeForPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.html') return 'text/html; charset=utf-8';
+  if (ext === '.css') return 'text/css; charset=utf-8';
+  if (ext === '.js') return 'application/javascript; charset=utf-8';
+  if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.svg') return 'image/svg+xml';
+  return 'application/octet-stream';
 }
 
 function mergeById(items, translatedItems) {
@@ -336,70 +289,337 @@ async function callLocalTranslate(input) {
   };
 }
 
+async function callMarianTranslate(input, config) {
+  const startedAt = Date.now();
+  const items = Array.isArray(input.items) ? input.items : [];
+  if (items.length === 0) {
+    return { translatedItems: [], latencyMs: Date.now() - startedAt, model: 'marian' };
+  }
+
+  const directItems = [];
+  const toTranslate = [];
+  for (const item of items) {
+    const text = String(item.text || '');
+    if (!text) {
+      directItems.push({ id: item.id, translated_text: '', confidence: 1 });
+      continue;
+    }
+    if (containsCjk(text)) {
+      directItems.push({ id: item.id, translated_text: text, confidence: 0.99 });
+      continue;
+    }
+    toTranslate.push({ id: item.id, text });
+  }
+
+  if (toTranslate.length === 0) {
+    return {
+      translatedItems: directItems,
+      latencyMs: Date.now() - startedAt,
+      model: 'marian'
+    };
+  }
+
+  const modelId = config?.marian?.modelId || process.env.MARIAN_MODEL_ID || 'unknown';
+  const localDir = resolveMarianModelDir(config, modelId);
+  const translatedItems = await marianClient.translateItems(toTranslate, {
+    modelId,
+    localDir,
+    device: config?.marian?.device,
+    dtype: config?.marian?.dtype,
+    maxTokens: config?.marian?.maxTokens,
+    sourceLang: input.source_lang,
+    targetLang: input.target_lang
+  });
+  const normalized = translatedItems.map((item) => ({
+    id: String(item.id || ''),
+    translated_text: String(item.translated_text || ''),
+    confidence: Number.isFinite(item.confidence) ? Number(item.confidence) : 0.8
+  }));
+  return {
+    translatedItems: [...normalized, ...directItems],
+    latencyMs: Date.now() - startedAt,
+    model: `marian:${modelId}`
+  };
+}
+
 function createServer() {
+  loadConfig();
   return http.createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
-    return jsonResponse(res, 200, { ok: true, service: 'translation-api' });
-  }
+    const url = new URL(req.url || '/', `http://${HOST}`);
+    const pathname = url.pathname;
 
-  if (req.method === 'POST' && req.url === '/v1/translate') {
-    let body;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: 'invalid JSON' });
+    if (req.method === 'GET' && pathname === '/health') {
+      return jsonResponse(res, 200, { ok: true, service: 'translation-api' });
     }
 
-    const validation = validateTranslateRequest(body);
-    if (validation) {
-      return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: validation });
+    if (req.method === 'GET' && (pathname === '/admin' || pathname === '/admin/')) {
+      if (!ensureAdmin(req, res, url)) return;
+      const filePath = path.join(ADMIN_UI_DIR, 'index.html');
+      return sendFile(res, filePath, 'text/html; charset=utf-8');
     }
 
-    const requestId = body.request_id || crypto.randomUUID();
-    const sourceLang = body.source_lang || 'auto';
-    const targetLang = body.target_lang || 'zh-CN';
-
-    try {
-      const engineInput = {
-        source_lang: sourceLang,
-        target_lang: targetLang,
-        items: body.items
-      };
-
-      const result =
-        TRANSLATION_ENGINE === 'local' ? await callLocalTranslate(engineInput) : await callSmallLlmTranslate(engineInput);
-
-      return jsonResponse(res, 200, {
-        request_id: requestId,
-        detected_source_lang: sourceLang,
-        items: mergeById(body.items, result.translatedItems),
-        model: TRANSLATION_ENGINE === 'local' ? result.model : LLM_MODEL,
-        latency_ms: result.latencyMs,
-        error_code: null
-      });
-    } catch (error) {
-      const status = mapProviderErrorStatus(error);
-      return jsonResponse(res, status, {
-        request_id: requestId,
-        detected_source_lang: sourceLang,
-        items: body.items.map((item) => ({
-          id: item.id,
-          translated_text: `${item.text} [翻译失败，可重试]`,
-          confidence: 0
-        })),
-        model: TRANSLATION_ENGINE === 'local' ? LOCAL_MODEL_NAME : LLM_MODEL,
-        latency_ms: null,
-        error_code:
-          status === SERVER_ERROR.timeout
-            ? 'timeout'
-            : status === SERVER_ERROR.auth_required
-              ? 'auth_required'
-              : status === SERVER_ERROR.rate_limited
-                ? 'rate_limited'
-                : 'provider_down'
-      });
+    if (req.method === 'GET' && pathname.startsWith('/admin/assets/')) {
+      const rel = pathname.replace('/admin/assets/', '');
+      const filePath = path.resolve(ADMIN_ASSETS_DIR, rel);
+      if (!(filePath === ADMIN_ASSETS_DIR || filePath.startsWith(`${ADMIN_ASSETS_DIR}${path.sep}`))) {
+        return jsonResponse(res, 404, { error_code: 'not_found' });
+      }
+      return sendFile(res, filePath, contentTypeForPath(filePath));
     }
-  }
+
+    if (req.method === 'GET' && pathname === '/v1/config') {
+      if (!ensureAdmin(req, res, url)) return;
+      return jsonResponse(res, 200, { ok: true, config: getConfig() });
+    }
+
+    if (req.method === 'PUT' && pathname === '/v1/config') {
+      if (!ensureAdmin(req, res, url)) return;
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: 'invalid JSON' });
+      }
+      try {
+        const updated = updateConfig(body || {});
+        return jsonResponse(res, 200, { ok: true, config: updated });
+      } catch (error) {
+        return jsonResponse(res, SERVER_ERROR.internal_error, {
+          error_code: 'config_update_failed',
+          message: String(error?.message || error)
+        });
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/v1/models/installed') {
+      if (!ensureAdmin(req, res, url)) return;
+      const engine = normalizeEngine(url.searchParams.get('engine'), 'argos');
+      const config = getConfig();
+      try {
+        const installed =
+          engine === 'marian' ? marianManager.listInstalled(config) : argosManager.listInstalled(config);
+        return jsonResponse(res, 200, { ok: true, engine, installed });
+      } catch (error) {
+        return jsonResponse(res, SERVER_ERROR.internal_error, {
+          ok: false,
+          error_code: error?.code || 'model_list_failed',
+          message: String(error?.message || error),
+          engine,
+          installed: []
+        });
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/v1/models/available') {
+      if (!ensureAdmin(req, res, url)) return;
+      const engine = normalizeEngine(url.searchParams.get('engine'), 'argos');
+      const config = getConfig();
+      const refresh = parseBoolean(url.searchParams.get('refresh'));
+      const cache = loadModelCache();
+      const cached = getCachedAvailable(cache, engine);
+      if (!refresh && cached) {
+        return jsonResponse(res, 200, {
+          ok: true,
+          engine,
+          available: cached.available || [],
+          cached: true,
+          updatedAt: cached.updatedAt || null
+        });
+      }
+      if (engine === 'marian') {
+        const updated = updateModelCache(cache, engine, MARIAN_RECOMMENDED);
+        return jsonResponse(res, 200, {
+          ok: true,
+          engine,
+          available: MARIAN_RECOMMENDED,
+          cached: false,
+          updatedAt: updated.updatedAt || null
+        });
+      }
+      if (!refresh && !cached) {
+        return jsonResponse(res, 200, {
+          ok: true,
+          engine,
+          available: [],
+          cached: false,
+          cache_miss: true,
+          updatedAt: null
+        });
+      }
+      try {
+        const available = await argosManager.listAvailable(config);
+        const updated = updateModelCache(cache, engine, available);
+        return jsonResponse(res, 200, {
+          ok: true,
+          engine,
+          available,
+          cached: false,
+          updatedAt: updated.updatedAt || null
+        });
+      } catch (error) {
+        return jsonResponse(res, SERVER_ERROR.internal_error, {
+          ok: false,
+          error_code: error?.code || 'model_list_failed',
+          message: String(error?.message || error),
+          engine,
+          available: []
+        });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/v1/models/download') {
+      if (!ensureAdmin(req, res, url)) return;
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: 'invalid JSON' });
+      }
+      const engine = normalizeEngine(body?.engine, 'argos');
+      const config = getConfig();
+      try {
+        if (engine === 'marian') {
+          const modelId = String(body?.modelId || body?.model_id || '').trim();
+          if (!modelId) {
+            return jsonResponse(res, SERVER_ERROR.bad_request, {
+              error_code: 'bad_request',
+              message: 'modelId is required'
+            });
+          }
+          const result = await marianManager.downloadModel(config, modelId);
+          return jsonResponse(res, 200, { ok: true, engine, result });
+        }
+        const from = String(body?.from || '').trim();
+        const to = String(body?.to || '').trim();
+        if (!from || !to) {
+          return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: 'from/to required' });
+        }
+        const result = await argosManager.downloadModel(config, from, to);
+        return jsonResponse(res, 200, { ok: true, engine, result });
+      } catch (error) {
+        return jsonResponse(res, SERVER_ERROR.internal_error, {
+          ok: false,
+          error_code: error?.code || 'model_download_failed',
+          message: String(error?.message || error),
+          engine
+        });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/v1/models/remove') {
+      if (!ensureAdmin(req, res, url)) return;
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: 'invalid JSON' });
+      }
+      const engine = normalizeEngine(body?.engine, 'argos');
+      const config = getConfig();
+      try {
+        if (engine === 'marian') {
+          const modelId = String(body?.modelId || body?.model_id || '').trim();
+          if (!modelId) {
+            return jsonResponse(res, SERVER_ERROR.bad_request, {
+              error_code: 'bad_request',
+              message: 'modelId is required'
+            });
+          }
+          const result = marianManager.removeModel(config, modelId);
+          return jsonResponse(res, 200, { ok: true, engine, result });
+        }
+        const filename = String(body?.filename || '').trim();
+        const from = String(body?.from || '').trim();
+        const to = String(body?.to || '').trim();
+        const resolved = filename || (from && to ? `${from}-${to}.argosmodel` : '');
+        if (!resolved) {
+          return jsonResponse(res, SERVER_ERROR.bad_request, {
+            error_code: 'bad_request',
+            message: 'filename or from/to required'
+          });
+        }
+        const result = argosManager.removeModel(config, resolved);
+        return jsonResponse(res, 200, { ok: true, engine, result });
+      } catch (error) {
+        return jsonResponse(res, SERVER_ERROR.internal_error, {
+          ok: false,
+          error_code: error?.code || 'model_remove_failed',
+          message: String(error?.message || error),
+          engine
+        });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/v1/translate') {
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: 'invalid JSON' });
+      }
+
+      const validation = validateTranslateRequest(body);
+      if (validation) {
+        return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: validation });
+      }
+
+      const requestId = body.request_id || crypto.randomUUID();
+      const sourceLang = body.source_lang || 'auto';
+      const targetLang = body.target_lang || 'zh-CN';
+      const config = getConfig();
+      const engine = normalizeEngine(config.engine, 'argos');
+
+      try {
+        const engineInput = {
+          source_lang: sourceLang,
+          target_lang: targetLang,
+          items: body.items
+        };
+
+        let result;
+        if (engine === 'marian') {
+          result = await callMarianTranslate(engineInput, config);
+        } else {
+          result = await callLocalTranslate(engineInput);
+        }
+
+        return jsonResponse(res, 200, {
+          request_id: requestId,
+          detected_source_lang: sourceLang,
+          items: mergeById(body.items, result.translatedItems),
+          model: result.model,
+          latency_ms: result.latencyMs,
+          error_code: null
+        });
+      } catch (error) {
+        const missingModel = extractMissingModel(error);
+        const status = missingModel ? SERVER_ERROR.missing_model : mapProviderErrorStatus(error);
+        const errorModel =
+          engine === 'marian' ? `marian:${config?.marian?.modelId || 'unknown'}` : LOCAL_MODEL_NAME;
+        return jsonResponse(res, status, {
+          request_id: requestId,
+          detected_source_lang: sourceLang,
+          items: body.items.map((item) => ({
+            id: item.id,
+            translated_text: `${item.text} [翻译失败，可重试]`,
+            confidence: 0
+          })),
+          model: errorModel,
+          latency_ms: null,
+          error_code:
+            status === SERVER_ERROR.missing_model
+              ? 'missing_model'
+              : status === SERVER_ERROR.timeout
+                ? 'timeout'
+                : status === SERVER_ERROR.auth_required
+                  ? 'auth_required'
+                  : status === SERVER_ERROR.rate_limited
+                    ? 'rate_limited'
+                    : 'provider_down',
+          missing_model: missingModel
+        });
+      }
+    }
 
     return jsonResponse(res, 404, { error_code: 'not_found' });
   });

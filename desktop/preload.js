@@ -7,9 +7,12 @@ contextBridge.exposeInMainWorld('snapTranslate', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (settings) => ipcRenderer.invoke('settings:set', settings),
   updateHotkey: (hotkey) => ipcRenderer.invoke('hotkey:update', hotkey),
-  translateText: (text) => ipcRenderer.invoke('translate:text', { text }),
+  translateText: (text, options = {}) => ipcRenderer.invoke('translate:text', { text, ...options }),
   openSettings: () => ipcRenderer.invoke('settings:open'),
   openTranslate: () => ipcRenderer.invoke('translate:open'),
+  onSelectionWindows: (handler) => {
+    ipcRenderer.on('selection:windows', (_, payload) => handler(payload));
+  },
   onOverlayRender: (handler) => {
     ipcRenderer.on('overlay:render', (_, payload) => handler(payload));
   }
