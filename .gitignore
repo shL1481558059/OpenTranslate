@@ -41,5 +41,7 @@ tmp/
 temp/
 
 # Project-specific
+models/
 models/argos/*.argosmodel
+api/marian_models.json
 api/model-cache.json
