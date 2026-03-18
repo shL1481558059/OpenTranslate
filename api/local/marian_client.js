@@ -50,12 +50,10 @@ function ensureConfig() {
     currentConfig.workerPath !== next.workerPath ||
     currentConfig.hfEndpoint !== next.hfEndpoint ||
     currentConfig.hfDisableSslVerify !== next.hfDisableSslVerify;
+  currentConfig = next;
   if (changed) {
-    currentConfig = next;
     initPromise = null;
     resetWorker('config_changed');
-  } else {
-    currentConfig = next;
   }
   return currentConfig;
 }

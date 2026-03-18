@@ -111,18 +111,21 @@ function drawOutline() {
   );
 }
 
+function redrawMask() {
+  drawHoles();
+  drawOutline();
+}
+
 function updateHover(screenPoint) {
   const target = hitTestWindow(screenPoint);
   if (target && (!hoveredWindow || hoveredWindow.id !== target.id)) {
     hoveredWindow = target;
-    drawHoles();
-    drawOutline();
+    redrawMask();
     return;
   }
   if (!target && hoveredWindow) {
     hoveredWindow = null;
-    drawHoles();
-    drawOutline();
+    redrawMask();
   }
 }
 
@@ -144,8 +147,7 @@ function rebuildSnapEdges(windows) {
   snapEdgesX = edgesX;
   snapEdgesY = edgesY;
   resizeMask();
-  drawHoles();
-  drawOutline();
+  redrawMask();
 }
 
 function nearestEdge(value, edges) {
@@ -211,8 +213,7 @@ window.addEventListener('mousedown', (event) => {
   const screenPoint = applySnap({ x: event.screenX, y: event.screenY });
   if (hoveredWindow) {
     hoveredWindow = null;
-    drawHoles();
-    drawOutline();
+    redrawMask();
   }
   startScreen = screenPoint;
   startClient = toClient(screenPoint, { x: event.clientX, y: event.clientY });
@@ -305,13 +306,11 @@ if (window.snapTranslate?.onSelectionWindows) {
 }
 
 resizeMask();
-drawHoles();
-drawOutline();
+redrawMask();
 rebuildSnapEdges([]);
 window.addEventListener('resize', () => {
   resizeMask();
-  drawHoles();
-  drawOutline();
+  redrawMask();
 });
 
 setHint();

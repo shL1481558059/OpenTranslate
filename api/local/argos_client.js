@@ -50,12 +50,10 @@ function ensureConfig() {
     currentConfig.venvDir !== next.venvDir ||
     currentConfig.pythonPath !== next.pythonPath ||
     currentConfig.workerPath !== next.workerPath;
+  currentConfig = next;
   if (changed) {
-    currentConfig = next;
     initPromise = null;
     resetWorker('config_changed');
-  } else {
-    currentConfig = next;
   }
   return currentConfig;
 }

@@ -12,19 +12,15 @@ function resolveScriptPath() {
   if (!app || !app.isPackaged) {
     return local;
   }
-  const unpacked = path.join(
-    process.resourcesPath,
-    'app.asar.unpacked',
-    'desktop',
-    'scripts',
-    'vision_ocr.swift'
-  );
-  if (fs.existsSync(unpacked)) {
-    return unpacked;
-  }
-  const resources = path.join(process.resourcesPath, 'desktop', 'scripts', 'vision_ocr.swift');
-  if (fs.existsSync(resources)) {
-    return resources;
+  const candidates = [
+    path.join(process.resourcesPath, 'app.asar.unpacked', 'desktop', 'scripts', 'vision_ocr.swift'),
+    path.join(process.resourcesPath, 'desktop', 'scripts', 'vision_ocr.swift'),
+    local
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
   }
   return local;
 }

@@ -19,6 +19,11 @@ function setStatus(message, type) {
   statusEl.className = `status${type ? ` ${type}` : ''}`;
 }
 
+function clearHotkeyInput() {
+  hotkeyEl.value = '';
+  setStatus('已清空快捷键。', '');
+}
+
 function updateModeFields() {
   const engine = engineEl.value;
   llmFieldsEl.style.display = engine === 'llm' ? 'grid' : 'none';
@@ -144,15 +149,8 @@ hotkeyEl.addEventListener('keydown', async (event) => {
   event.preventDefault();
   event.stopPropagation();
 
-  if (event.key === 'Escape') {
-    hotkeyEl.value = '';
-    setStatus('已清空快捷键。', '');
-    return;
-  }
-
-  if (event.key === 'Backspace' || event.key === 'Delete') {
-    hotkeyEl.value = '';
-    setStatus('已清空快捷键。', '');
+  if (event.key === 'Escape' || event.key === 'Backspace' || event.key === 'Delete') {
+    clearHotkeyInput();
     return;
   }
 

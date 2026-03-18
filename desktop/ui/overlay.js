@@ -65,8 +65,7 @@ function renderBlocks(payload) {
     if (payload?.maskColor) {
       mask.style.background = payload.maskColor;
     } else {
-      const opacity = typeof payload?.maskOpacity === 'number' ? payload.maskOpacity : 0.35;
-      mask.style.background = `rgba(0, 0, 0, ${opacity})`;
+      mask.style.background = `rgba(0, 0, 0, ${getMaskOpacity(payload)})`;
     }
   }
   const textOnly = payload && payload.textOnly === true;
@@ -108,6 +107,10 @@ function renderBlocks(payload) {
     root.appendChild(el);
     fitTextToBox(el, block.bbox, hint);
   }
+}
+
+function getMaskOpacity(payload) {
+  return typeof payload?.maskOpacity === 'number' ? payload.maskOpacity : 0.35;
 }
 
 window.snapTranslate.onOverlayRender((payload) => {

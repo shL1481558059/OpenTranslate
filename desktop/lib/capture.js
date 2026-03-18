@@ -8,10 +8,19 @@ const execFileAsync = promisify(execFile);
 const KEEP_LAST = process.env.SNAP_TRANSLATE_KEEP_LAST === '1';
 const DEBUG_IMAGE_PATH = process.env.SNAP_TRANSLATE_DEBUG_IMAGE_PATH;
 
+function resolveImagePath(prefix) {
+  if (KEEP_LAST) {
+    return DEBUG_IMAGE_PATH || path.join(os.tmpdir(), 'snap-translate-last.png');
+  }
+  const stamp = Date.now();
+  const filename = prefix
+    ? `snap-translate-${prefix}-${stamp}.png`
+    : `snap-translate-${stamp}.png`;
+  return path.join(os.tmpdir(), filename);
+}
+
 async function captureRect(rect, scaleFactor = 1) {
-  const imagePath = KEEP_LAST
-    ? (DEBUG_IMAGE_PATH || path.join(os.tmpdir(), 'snap-translate-last.png'))
-    : path.join(os.tmpdir(), `snap-translate-${Date.now()}.png`);
+  const imagePath = resolveImagePath();
   const x = Math.round(rect.x * scaleFactor);
   const y = Math.round(rect.y * scaleFactor);
   const width = Math.round(rect.width * scaleFactor);
@@ -30,9 +39,7 @@ async function cleanupImage(imagePath) {
 }
 
 async function captureScreen() {
-  const imagePath = KEEP_LAST
-    ? (DEBUG_IMAGE_PATH || path.join(os.tmpdir(), 'snap-translate-last.png'))
-    : path.join(os.tmpdir(), `snap-translate-full-${Date.now()}.png`);
+  const imagePath = resolveImagePath('full');
   await execFileAsync('screencapture', ['-x', imagePath]);
   return imagePath;
 }

@@ -37,13 +37,9 @@ function copyTree(src, dst, excludeNames = new Set()) {
     if (excludeNames.has(entry.name)) {
       continue;
     }
-    if (entry.name === 'site-packages') {
-      continue;
-    }
     const from = path.join(src, entry.name);
     const to = path.join(dst, entry.name);
-    const stat = fs.lstatSync(from);
-    if (stat.isSymbolicLink()) {
+    if (entry.isSymbolicLink()) {
       const target = fs.readlinkSync(from);
       try {
         fs.symlinkSync(target, to);
@@ -56,7 +52,7 @@ function copyTree(src, dst, excludeNames = new Set()) {
       }
       continue;
     }
-    if (stat.isDirectory()) {
+    if (entry.isDirectory()) {
       copyTree(from, to, excludeNames);
       continue;
     }

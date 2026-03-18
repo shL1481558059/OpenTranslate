@@ -90,15 +90,6 @@ function jsonResponse(res, status, payload) {
   res.end(body);
 }
 
-function textResponse(res, status, body, contentType = 'text/plain; charset=utf-8') {
-  const text = String(body || '');
-  res.writeHead(status, {
-    'Content-Type': contentType,
-    'Content-Length': Buffer.byteLength(text)
-  });
-  res.end(text);
-}
-
 function sendFile(res, filePath, contentType) {
   try {
     const data = fs.readFileSync(filePath);
