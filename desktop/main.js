@@ -15,6 +15,7 @@ const { captureRect, captureScreen, cleanupImage } = require('./lib/capture');
 const ocrProvider = require('./lib/ocr-provider');
 const translationProvider = require('./lib/translation-provider');
 const layoutEngine = require('./lib/layout-engine');
+const { normalizeHotkey, hasModifierHotkey } = require('./lib/hotkey-rules');
 
 const CAPTURE_DELAY_MS = Number(process.env.SNAP_TRANSLATE_CAPTURE_DELAY_MS || 280);
 const DEFAULT_API_URL = process.env.TRANSLATION_API_URL || 'http://127.0.0.1:8787/v1/translate';
@@ -123,7 +124,14 @@ function saveSettings(next) {
 
 function registerHotkey(hotkey) {
   globalShortcut.unregisterAll();
-  const ok = globalShortcut.register(hotkey, () => {
+  const normalized = normalizeHotkey(hotkey);
+  if (!normalized) {
+    return true;
+  }
+  if (!hasModifierHotkey(normalized)) {
+    return false;
+  }
+  const ok = globalShortcut.register(normalized, () => {
     if (selectionWindow) {
       return;
     }
@@ -133,14 +141,22 @@ function registerHotkey(hotkey) {
 }
 
 function updateHotkey(nextHotkey) {
-  const trimmed = String(nextHotkey || '').trim();
+  const trimmed = normalizeHotkey(nextHotkey);
   if (!trimmed) {
-    return { ok: false, error: 'invalid_hotkey' };
+    const ok = registerHotkey('');
+    if (!ok) {
+      return { ok: false, error: 'hotkey_register_failed' };
+    }
+    saveSettings({ hotkey: '' });
+    return { ok: true, cleared: true };
+  }
+  if (!hasModifierHotkey(trimmed)) {
+    return { ok: false, error: 'hotkey_requires_modifier' };
   }
   const previous = settings?.hotkey;
   const ok = registerHotkey(trimmed);
   if (!ok) {
-    if (previous) {
+    if (previous !== undefined) {
       registerHotkey(previous);
     }
     return { ok: false, error: 'hotkey_register_failed' };
@@ -943,7 +959,9 @@ app.whenReady().then(async () => {
   ensureTray();
 
   const ok = registerHotkey(settings.hotkey);
-  if (!ok) {
+  if (!settings.hotkey) {
+    console.log('[desktop] hotkey disabled');
+  } else if (!ok) {
     console.error(`[desktop] failed to register hotkey: ${settings.hotkey}`);
   } else {
     console.log(`[desktop] hotkey ready: ${settings.hotkey}`);
@@ -957,8 +975,8 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('selection:complete', async (_, rect) => {
-    hideSelectionWindowForCapture();
     if (!rect) {
+      closeSelectionWindow();
       return;
     }
     let targetRect = rect;
@@ -971,11 +989,14 @@ app.whenReady().then(async () => {
           height: rect.height
         };
       } else {
+        closeSelectionWindow();
         return;
       }
     } else if (rect.width < 6 || rect.height < 6) {
+      closeSelectionWindow();
       return;
     }
+    hideSelectionWindowForCapture();
     try {
       await runPipeline(targetRect);
     } finally {
@@ -1004,10 +1025,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:set', async (_, next) => {
     const payload = sanitizeSettings(next);
     let hotkeyError = null;
-    if (payload.hotkey && payload.hotkey !== settings.hotkey) {
+    if (Object.hasOwn(payload, 'hotkey') && payload.hotkey !== settings.hotkey) {
       const result = updateHotkey(payload.hotkey);
       if (!result.ok) {
-        hotkeyError = result.error || 'hotkey_register_failed';
+        hotkeyError = result.error || 'hotkey_update_failed';
         delete payload.hotkey;
       }
     }

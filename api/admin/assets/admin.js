@@ -242,6 +242,18 @@ async function saveConfig() {
   });
 }
 
+function summarizeModelLoadErrors(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return '';
+  }
+  return errors
+    .map((entry) => {
+      const parsed = parseApiError(entry.error);
+      return `${entry.label}: ${parsed.summary || '请求失败'}`;
+    })
+    .join('\n');
+}
+
 async function loadModels(options = {}) {
   const refreshRemote = !!options.refreshRemote;
   clearList(argosInstalledEl);
@@ -249,12 +261,49 @@ async function loadModels(options = {}) {
   clearList(marianInstalledEl);
   clearList(marianAvailableEl);
 
-  const [argosInstalled, argosAvailable, marianInstalled, marianAvailable] = await Promise.all([
-    apiFetch('/v1/models/installed?engine=argos'),
-    apiFetch(`/v1/models/available?engine=argos${refreshRemote ? '&refresh=1' : ''}`),
-    apiFetch('/v1/models/installed?engine=marian'),
-    apiFetch(`/v1/models/available?engine=marian${refreshRemote ? '&refresh=1' : ''}`)
-  ]);
+  const requests = [
+    {
+      key: 'argosInstalled',
+      label: 'Argos 已安装列表',
+      path: '/v1/models/installed?engine=argos',
+      fallback: { installed: [] }
+    },
+    {
+      key: 'argosAvailable',
+      label: 'Argos 可下载列表',
+      path: `/v1/models/available?engine=argos${refreshRemote ? '&refresh=1' : ''}`,
+      fallback: { available: [], cache_miss: false }
+    },
+    {
+      key: 'marianInstalled',
+      label: 'Marian 已安装列表',
+      path: '/v1/models/installed?engine=marian',
+      fallback: { installed: [] }
+    },
+    {
+      key: 'marianAvailable',
+      label: 'Marian 可下载列表',
+      path: `/v1/models/available?engine=marian${refreshRemote ? '&refresh=1' : ''}`,
+      fallback: { available: [], cache_miss: false }
+    }
+  ];
+  const settled = await Promise.allSettled(requests.map((item) => apiFetch(item.path)));
+  const errors = [];
+  const data = {};
+  requests.forEach((item, index) => {
+    const result = settled[index];
+    if (result.status === 'fulfilled') {
+      data[item.key] = result.value || item.fallback;
+      return;
+    }
+    data[item.key] = item.fallback;
+    errors.push({ label: item.label, error: result.reason });
+  });
+
+  const argosInstalled = data.argosInstalled;
+  const argosAvailable = data.argosAvailable;
+  const marianInstalled = data.marianInstalled;
+  const marianAvailable = data.marianAvailable;
 
   const argosInstalledList = argosInstalled.installed || [];
   if (!argosInstalledList.length) {
@@ -353,6 +402,8 @@ async function loadModels(options = {}) {
     });
     renderRow(marianAvailableEl, title, meta, [btn]);
   });
+
+  return { errors };
 }
 
 engineSelect.addEventListener('change', () => {
@@ -363,7 +414,11 @@ reloadBtn.addEventListener('click', async () => {
   setStatus('刷新配置中…');
   try {
     await loadConfig();
-    await loadModels();
+    const result = await loadModels();
+    if (result.errors.length > 0) {
+      setStatus('配置已刷新（部分模型接口失败）', 'error', null, summarizeModelLoadErrors(result.errors));
+      return;
+    }
     setStatus('配置已刷新', 'success');
   } catch (error) {
     setErrorStatus('刷新失败', error);
@@ -373,7 +428,16 @@ reloadBtn.addEventListener('click', async () => {
 refreshModelsBtn.addEventListener('click', async () => {
   setStatus('刷新模型列表中…', 'loading', { indeterminate: true });
   try {
-    await loadModels({ refreshRemote: true });
+    const result = await loadModels({ refreshRemote: true });
+    if (result.errors.length > 0) {
+      setStatus(
+        '模型列表已刷新（部分请求失败）',
+        'error',
+        { value: 100 },
+        summarizeModelLoadErrors(result.errors)
+      );
+      return;
+    }
     setStatus('模型列表已刷新', 'success', { value: 100 });
   } catch (error) {
     setErrorStatus('刷新失败', error);
@@ -413,7 +477,10 @@ downloadCustomMarian.addEventListener('click', async () => {
 (async () => {
   try {
     await loadConfig();
-    await loadModels();
+    const result = await loadModels();
+    if (result.errors.length > 0) {
+      setStatus('初始化完成（部分模型接口失败）', 'error', null, summarizeModelLoadErrors(result.errors));
+    }
   } catch (error) {
     setErrorStatus('初始化失败', error);
   }

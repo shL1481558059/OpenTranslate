@@ -19,9 +19,38 @@ function setStatus(message, type) {
   statusEl.className = `status${type ? ` ${type}` : ''}`;
 }
 
-function clearHotkeyInput() {
-  hotkeyEl.value = '';
-  setStatus('已清空快捷键。', '');
+function getHotkeyErrorMessage(errorCode) {
+  if (errorCode === 'hotkey_requires_modifier') {
+    return '请使用组合键（至少包含 Command / Control / Alt / Shift）。';
+  }
+  if (errorCode === 'hotkey_register_failed') {
+    return '系统未能注册该快捷键，请更换后重试。';
+  }
+  if (errorCode === 'invalid_hotkey') {
+    return '快捷键格式无效。';
+  }
+  return errorCode || '未知错误';
+}
+
+async function clearHotkeyInput() {
+  if (!window.snapTranslate?.updateHotkey) {
+    setStatus('无法清空快捷键。', 'error');
+    return;
+  }
+  const previous = hotkeyEl.value;
+  hotkeyBinding = true;
+  try {
+    const result = await window.snapTranslate.updateHotkey('');
+    if (!result?.ok) {
+      hotkeyEl.value = previous;
+      setStatus(`快捷键清空失败：${getHotkeyErrorMessage(result?.error)}`, 'error');
+      return;
+    }
+    hotkeyEl.value = '';
+    setStatus('快捷键已清空。', 'success');
+  } finally {
+    hotkeyBinding = false;
+  }
 }
 
 function updateModeFields() {
@@ -86,7 +115,7 @@ function buildAccelerator(event) {
   if (event.shiftKey) parts.push('Shift');
 
   if (!parts.length) {
-    return baseKey;
+    return null;
   }
   return `${parts.join('+')}+${baseKey}`;
 }
@@ -150,7 +179,7 @@ hotkeyEl.addEventListener('keydown', async (event) => {
   event.stopPropagation();
 
   if (event.key === 'Escape' || event.key === 'Backspace' || event.key === 'Delete') {
-    clearHotkeyInput();
+    await clearHotkeyInput();
     return;
   }
 
@@ -162,13 +191,18 @@ hotkeyEl.addEventListener('keydown', async (event) => {
 
   hotkeyEl.value = accelerator;
   hotkeyBinding = true;
-  const result = await window.snapTranslate.updateHotkey(accelerator);
-  hotkeyBinding = false;
-  if (!result.ok) {
-    setStatus(`快捷键更新失败：${result.error || '未知错误'}`, 'error');
-    return;
+  try {
+    const result = await window.snapTranslate.updateHotkey(accelerator);
+    if (!result.ok) {
+      setStatus(`快捷键更新失败：${getHotkeyErrorMessage(result.error)}`, 'error');
+      return;
+    }
+    setStatus(`快捷键已更新为 ${accelerator}`, 'success');
+  } catch (error) {
+    setStatus(`快捷键更新失败：${error.message || error}`, 'error');
+  } finally {
+    hotkeyBinding = false;
   }
-  setStatus(`快捷键已更新为 ${accelerator}`, 'success');
 });
 
 backBtn?.addEventListener('click', async () => {

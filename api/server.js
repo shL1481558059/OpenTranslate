@@ -10,6 +10,7 @@ const HOST = process.env.TRANSLATION_API_HOST || '127.0.0.1';
 const LOCAL_MODEL_NAME = process.env.LOCAL_TRANSLATE_MODEL_NAME || 'argos-local';
 
 const { getConfig, updateConfig, loadConfig, getAdminToken, writeJsonAtomic } = require('./config');
+const { normalizeLang, detectLanguageFromItems, extractMarianPair } = require('./lang-utils');
 const localArgos = require('./local/argos_client');
 const marianClient = require('./local/marian_client');
 const argosManager = require('./local/argos_manager');
@@ -192,19 +193,37 @@ function mapProviderErrorStatus(error) {
   return SERVER_ERROR.provider_down;
 }
 
-function containsCjk(text) {
-  return /[\u3400-\u9FFF]/.test(text || '');
+function normalizeRequestedSourceLang(value) {
+  return normalizeLang(value, 'auto', { allowAuto: true });
 }
 
-function normalizeArgosLang(lang, fallback) {
-  if (!lang || lang === 'auto') {
-    return fallback;
+function normalizeTargetLang(value, fallback = 'zh') {
+  return normalizeLang(value, fallback);
+}
+
+function resolveSourceLang(items, requestedSourceLang) {
+  const sourceLang = normalizeRequestedSourceLang(requestedSourceLang);
+  if (sourceLang !== 'auto') {
+    return {
+      sourceLang,
+      detectedSourceLang: sourceLang
+    };
   }
-  const normalized = String(lang).toLowerCase();
-  if (normalized.startsWith('zh')) {
-    return 'zh';
+
+  const detected = detectLanguageFromItems(items) || 'en';
+  return {
+    sourceLang: detected,
+    detectedSourceLang: detected
+  };
+}
+
+function shouldPassthroughText(text, sourceLang, targetLang) {
+  if (!text) {
+    return true;
   }
-  return normalized.split('-')[0] || fallback;
+  const normalizedSource = normalizeLang(sourceLang, '');
+  const normalizedTarget = normalizeLang(targetLang, '');
+  return Boolean(normalizedSource && normalizedTarget && normalizedSource === normalizedTarget);
 }
 
 function encodeMarianModelId(modelId) {
@@ -230,7 +249,7 @@ function mergeById(items, translatedItems) {
   const byId = new Map(translatedItems.map((item) => [item.id, item]));
   return items.map((item) => {
     const translated = byId.get(item.id);
-    if (!translated || !translated.translated_text) {
+    if (!translated || typeof translated.translated_text !== 'string') {
       return {
         id: item.id,
         translated_text: `${item.text} [翻译失败，可重试]`,
@@ -241,27 +260,108 @@ function mergeById(items, translatedItems) {
   });
 }
 
+function buildMarianCandidates(config) {
+  const candidates = [];
+  const seen = new Set();
+  const pushCandidate = ({ modelId, from, to, installed = false, localDir = null, priority = 10 }) => {
+    if (!modelId || !from || !to) {
+      return;
+    }
+    const key = `${modelId}:${from}:${to}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    candidates.push({
+      modelId,
+      from,
+      to,
+      installed,
+      localDir,
+      priority
+    });
+  };
+
+  const configuredModelId = config?.marian?.modelId || process.env.MARIAN_MODEL_ID || '';
+  const configuredPair = extractMarianPair(configuredModelId);
+  const configuredLocalDir = configuredModelId ? resolveMarianModelDir(config, configuredModelId) : null;
+  pushCandidate({
+    modelId: configuredModelId,
+    from: configuredPair?.from,
+    to: configuredPair?.to,
+    installed: Boolean(configuredLocalDir && fs.existsSync(configuredLocalDir)),
+    localDir: configuredLocalDir,
+    priority: 2
+  });
+
+  for (const entry of marianManager.listInstalled(config)) {
+    const pair = entry?.from && entry?.to ? { from: entry.from, to: entry.to } : extractMarianPair(entry?.model_id);
+    pushCandidate({
+      modelId: entry?.model_id,
+      from: pair?.from,
+      to: pair?.to,
+      installed: true,
+      localDir: entry?.local_dir || resolveMarianModelDir(config, entry?.model_id),
+      priority: 0
+    });
+  }
+
+  for (const entry of MARIAN_RECOMMENDED) {
+    pushCandidate({
+      modelId: entry.model_id,
+      from: entry.from,
+      to: entry.to,
+      installed: false,
+      localDir: resolveMarianModelDir(config, entry.model_id),
+      priority: 5
+    });
+  }
+
+  return candidates.sort((left, right) => left.priority - right.priority);
+}
+
+function resolveMarianModelSelection(config, sourceLang, targetLang) {
+  const normalizedSource = normalizeLang(sourceLang, '');
+  const normalizedTarget = normalizeLang(targetLang, '');
+  if (!normalizedSource || !normalizedTarget) {
+    throw new Error(`no_translation_pair:${normalizedSource || 'unknown'}->${normalizedTarget || 'unknown'}`);
+  }
+
+  const candidates = buildMarianCandidates(config).filter(
+    (candidate) => candidate.from === normalizedSource && candidate.to === normalizedTarget
+  );
+  if (!candidates.length) {
+    throw new Error(`no_translation_pair:${normalizedSource}->${normalizedTarget}`);
+  }
+
+  const selected = candidates.find((candidate) => candidate.installed) || candidates[0];
+  return {
+    modelId: selected.modelId,
+    localDir: selected.localDir || resolveMarianModelDir(config, selected.modelId)
+  };
+}
+
 async function callLocalTranslate(input) {
   const startedAt = Date.now();
   const items = Array.isArray(input.items) ? input.items : [];
+  const sourceLang = normalizeLang(input.source_lang, 'en');
+  const targetLang = normalizeTargetLang(input.target_lang, 'zh');
   const directItems = [];
   const toTranslate = [];
 
   for (const item of items) {
     const text = String(item.text || '');
-    if (containsCjk(text)) {
+    if (shouldPassthroughText(text, sourceLang, targetLang)) {
       directItems.push({
         id: item.id,
         translated_text: text,
-        confidence: 0.99
+        confidence: text ? 0.99 : 1
       });
     } else {
       toTranslate.push({ id: item.id, text });
     }
   }
 
-  const sourceLang = normalizeArgosLang(input.source_lang, 'en');
-  const targetLang = normalizeArgosLang(input.target_lang, 'zh');
   let translatedItems = [];
 
   if (toTranslate.length > 0) {
@@ -283,6 +383,8 @@ async function callLocalTranslate(input) {
 async function callMarianTranslate(input, config) {
   const startedAt = Date.now();
   const items = Array.isArray(input.items) ? input.items : [];
+  const sourceLang = normalizeLang(input.source_lang, '');
+  const targetLang = normalizeTargetLang(input.target_lang, 'zh');
   if (items.length === 0) {
     return { translatedItems: [], latencyMs: Date.now() - startedAt, model: 'marian' };
   }
@@ -291,12 +393,8 @@ async function callMarianTranslate(input, config) {
   const toTranslate = [];
   for (const item of items) {
     const text = String(item.text || '');
-    if (!text) {
-      directItems.push({ id: item.id, translated_text: '', confidence: 1 });
-      continue;
-    }
-    if (containsCjk(text)) {
-      directItems.push({ id: item.id, translated_text: text, confidence: 0.99 });
+    if (shouldPassthroughText(text, sourceLang, targetLang)) {
+      directItems.push({ id: item.id, translated_text: text, confidence: text ? 0.99 : 1 });
       continue;
     }
     toTranslate.push({ id: item.id, text });
@@ -310,8 +408,9 @@ async function callMarianTranslate(input, config) {
     };
   }
 
-  const modelId = config?.marian?.modelId || process.env.MARIAN_MODEL_ID || 'unknown';
-  const localDir = resolveMarianModelDir(config, modelId);
+  const selection = resolveMarianModelSelection(config, sourceLang, targetLang);
+  const modelId = selection.modelId;
+  const localDir = selection.localDir;
   const translatedItems = await marianClient.translateItems(toTranslate, {
     modelId,
     localDir,
@@ -478,6 +577,7 @@ function createServer() {
             });
           }
           const result = await marianManager.downloadModel(config, modelId);
+          marianClient.resetRuntime('model_downloaded');
           return jsonResponse(res, 200, { ok: true, engine, result });
         }
         const from = String(body?.from || '').trim();
@@ -486,6 +586,7 @@ function createServer() {
           return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: 'from/to required' });
         }
         const result = await argosManager.downloadModel(config, from, to);
+        localArgos.resetRuntime('model_downloaded');
         return jsonResponse(res, 200, { ok: true, engine, result });
       } catch (error) {
         return jsonResponse(res, SERVER_ERROR.internal_error, {
@@ -517,6 +618,7 @@ function createServer() {
             });
           }
           const result = marianManager.removeModel(config, modelId);
+          marianClient.resetRuntime('model_removed');
           return jsonResponse(res, 200, { ok: true, engine, result });
         }
         const filename = String(body?.filename || '').trim();
@@ -530,6 +632,7 @@ function createServer() {
           });
         }
         const result = argosManager.removeModel(config, resolved);
+        localArgos.resetRuntime('model_removed');
         return jsonResponse(res, 200, { ok: true, engine, result });
       } catch (error) {
         return jsonResponse(res, SERVER_ERROR.internal_error, {
@@ -555,14 +658,15 @@ function createServer() {
       }
 
       const requestId = body.request_id || crypto.randomUUID();
-      const sourceLang = body.source_lang || 'auto';
-      const targetLang = body.target_lang || 'zh-CN';
+      const requestedSourceLang = body.source_lang || 'auto';
+      const targetLang = normalizeTargetLang(body.target_lang, 'zh');
+      const sourceResolution = resolveSourceLang(body.items, requestedSourceLang);
       const config = getConfig();
       const engine = normalizeEngine(config.engine, 'argos');
 
       try {
         const engineInput = {
-          source_lang: sourceLang,
+          source_lang: sourceResolution.sourceLang,
           target_lang: targetLang,
           items: body.items
         };
@@ -576,7 +680,7 @@ function createServer() {
 
         return jsonResponse(res, 200, {
           request_id: requestId,
-          detected_source_lang: sourceLang,
+          detected_source_lang: sourceResolution.detectedSourceLang,
           items: mergeById(body.items, result.translatedItems),
           model: result.model,
           latency_ms: result.latencyMs,
@@ -586,10 +690,12 @@ function createServer() {
         const missingModel = extractMissingModel(error);
         const status = missingModel ? SERVER_ERROR.missing_model : mapProviderErrorStatus(error);
         const errorModel =
-          engine === 'marian' ? `marian:${config?.marian?.modelId || 'unknown'}` : LOCAL_MODEL_NAME;
+          engine === 'marian'
+            ? `marian:${missingModel?.model_id || config?.marian?.modelId || 'unknown'}`
+            : LOCAL_MODEL_NAME;
         return jsonResponse(res, status, {
           request_id: requestId,
-          detected_source_lang: sourceLang,
+          detected_source_lang: sourceResolution.detectedSourceLang,
           items: body.items.map((item) => ({
             id: item.id,
             translated_text: `${item.text} [翻译失败，可重试]`,
@@ -638,7 +744,14 @@ function startTranslationApi(options = {}) {
 }
 
 module.exports = {
-  startTranslationApi
+  startTranslationApi,
+  __internal: {
+    resolveSourceLang,
+    shouldPassthroughText,
+    resolveMarianModelSelection,
+    buildMarianCandidates,
+    mergeById
+  }
 };
 
 if (require.main === module) {

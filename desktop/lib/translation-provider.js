@@ -25,6 +25,30 @@ function normalizeConfig(config) {
   };
 }
 
+function isRetryableError(error) {
+  const code = String(error?.code || '');
+  const message = String(error?.message || error || '');
+  if (code === 'timeout' || message === 'timeout') {
+    return true;
+  }
+  if (code === 'rate_limited') {
+    return true;
+  }
+  if (/translation_api_5\d{2}/.test(message) || /llm_api_(429|5\d{2})/.test(message)) {
+    return true;
+  }
+  if (/fetch failed|network|socket|econn|eai_again|timed out|timeout/i.test(message)) {
+    return true;
+  }
+  return false;
+}
+
+function toTimeoutError() {
+  const error = new Error('timeout');
+  error.code = 'timeout';
+  return error;
+}
+
 async function callTranslateApi(payload, config) {
   let lastError;
 
@@ -68,11 +92,11 @@ async function callTranslateApi(payload, config) {
     } catch (error) {
       clearTimeout(timeout);
       if (error && error.name === 'AbortError') {
-        lastError = new Error('timeout');
+        lastError = toTimeoutError();
       } else {
         lastError = error;
       }
-      if (attempt === MAX_RETRIES) {
+      if (attempt === MAX_RETRIES || !isRetryableError(lastError)) {
         throw lastError;
       }
     }
@@ -180,11 +204,11 @@ async function callLlmTranslate(input, config) {
     } catch (error) {
       clearTimeout(timeout);
       if (error && error.name === 'AbortError') {
-        lastError = new Error('timeout');
+        lastError = toTimeoutError();
       } else {
         lastError = error;
       }
-      if (attempt === MAX_RETRIES) {
+      if (attempt === MAX_RETRIES || !isRetryableError(lastError)) {
         throw lastError;
       }
     }

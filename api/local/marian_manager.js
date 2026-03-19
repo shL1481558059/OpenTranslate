@@ -2,6 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const marianClient = require('./marian_client');
 const { writeJsonAtomic } = require('../config');
+const { extractMarianPair } = require('../lang-utils');
 
 const MANIFEST_PATH = path.resolve(__dirname, '..', 'marian_models.json');
 
@@ -53,7 +54,14 @@ function listInstalled(config) {
             const raw = fs.readFileSync(metaPath, 'utf8');
             const parsed = JSON.parse(raw);
             if (parsed?.model_id) {
-              return { model_id: parsed.model_id, local_dir: localDir, added_at: null };
+              const pair = extractMarianPair(parsed.model_id);
+              return {
+                model_id: parsed.model_id,
+                local_dir: localDir,
+                added_at: null,
+                from: pair?.from || null,
+                to: pair?.to || null
+              };
             }
           } catch {
             return null;
@@ -72,7 +80,9 @@ function listInstalled(config) {
   return existing.map((entry) => ({
     model_id: entry.model_id,
     local_dir: entry.local_dir,
-    added_at: entry.added_at || null
+    added_at: entry.added_at || null,
+    from: entry.from || extractMarianPair(entry.model_id)?.from || null,
+    to: entry.to || extractMarianPair(entry.model_id)?.to || null
   }));
 }
 
@@ -90,9 +100,16 @@ async function downloadModel(config, modelId) {
   if (!fs.existsSync(metaPath)) {
     fs.writeFileSync(metaPath, JSON.stringify({ model_id: modelId }, null, 2), 'utf8');
   }
+  const pair = extractMarianPair(modelId);
   const manifest = loadManifest();
   const filtered = manifest.filter((entry) => entry?.model_id !== modelId);
-  filtered.push({ model_id: modelId, local_dir: localDir, added_at: new Date().toISOString() });
+  filtered.push({
+    model_id: modelId,
+    local_dir: localDir,
+    added_at: new Date().toISOString(),
+    from: pair?.from || null,
+    to: pair?.to || null
+  });
   saveManifest(filtered);
   return { ok: true, model_id: modelId, local_dir: localDir };
 }

@@ -276,7 +276,12 @@ async function translateItems(items, options = {}) {
   return chain;
 }
 
+function resetRuntime(reason = 'manual_reset') {
+  resetWorker(reason);
+}
+
 module.exports = {
   downloadModel,
-  translateItems
+  translateItems,
+  resetRuntime
 };

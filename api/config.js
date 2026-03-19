@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const CONFIG_PATH = path.resolve(__dirname, 'config.json');
+const EXTERNAL_ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || '').trim();
 
 const DEFAULT_MARIAN_MODEL = 'Helsinki-NLP/opus-mt-en-zh';
 
@@ -129,8 +130,9 @@ function sanitizeConfig(input, fallback) {
 function applyEnvOverrides(config) {
   if (!config) return config;
   const next = deepMerge(config, {});
-  if (process.env.ADMIN_TOKEN) {
-    next.admin.token = process.env.ADMIN_TOKEN;
+  // Only honor startup-provided ADMIN_TOKEN so runtime updates are not locked by old values.
+  if (EXTERNAL_ADMIN_TOKEN) {
+    next.admin.token = EXTERNAL_ADMIN_TOKEN;
   }
   return next;
 }
@@ -206,12 +208,14 @@ function applyRuntimeEnv(config) {
   }
   if (config.admin?.token) {
     process.env.ADMIN_TOKEN = config.admin.token;
+  } else {
+    delete process.env.ADMIN_TOKEN;
   }
 }
 
 function getAdminToken() {
   const config = getConfig();
-  return process.env.ADMIN_TOKEN || config?.admin?.token || '';
+  return EXTERNAL_ADMIN_TOKEN || config?.admin?.token || '';
 }
 
 module.exports = {
@@ -222,5 +226,8 @@ module.exports = {
   loadConfig,
   applyRuntimeEnv,
   getAdminToken,
-  writeJsonAtomic
+  writeJsonAtomic,
+  __private: {
+    applyEnvOverrides
+  }
 };

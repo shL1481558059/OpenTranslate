@@ -191,6 +191,11 @@ async function translateItems(items, sourceLang, targetLang) {
   return chain;
 }
 
+function resetRuntime(reason = 'manual_reset') {
+  resetWorker(reason);
+}
+
 module.exports = {
-  translateItems
+  translateItems,
+  resetRuntime
 };
