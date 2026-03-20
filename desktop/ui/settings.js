@@ -1,3 +1,6 @@
+import './webawesome.js';
+import { initPageTransition, navigateWithTransition } from './page-transition.js';
+
 const formEl = document.getElementById('settingsForm');
 const engineEl = document.getElementById('engine');
 const sourceLangEl = document.getElementById('sourceLang');
@@ -11,12 +14,21 @@ const hotkeyEl = document.getElementById('hotkey');
 const llmFieldsEl = document.getElementById('llmFields');
 const statusEl = document.getElementById('status');
 const backBtn = document.getElementById('backBtn');
+const saveBtn = document.getElementById('saveBtn');
 let hotkeyBinding = false;
 let cachedApiUrl = '';
 
 function setStatus(message, type) {
-  statusEl.textContent = message || '';
-  statusEl.className = `status${type ? ` ${type}` : ''}`;
+  if (!message) {
+    statusEl.hidden = true;
+    statusEl.textContent = '';
+    statusEl.variant = 'neutral';
+    return;
+  }
+
+  statusEl.hidden = false;
+  statusEl.textContent = message;
+  statusEl.variant = type === 'error' ? 'danger' : type === 'success' ? 'success' : 'neutral';
 }
 
 function getHotkeyErrorMessage(errorCode) {
@@ -37,8 +49,10 @@ async function clearHotkeyInput() {
     setStatus('无法清空快捷键。', 'error');
     return;
   }
+
   const previous = hotkeyEl.value;
   hotkeyBinding = true;
+
   try {
     const result = await window.snapTranslate.updateHotkey('');
     if (!result?.ok) {
@@ -46,6 +60,7 @@ async function clearHotkeyInput() {
       setStatus(`快捷键清空失败：${getHotkeyErrorMessage(result?.error)}`, 'error');
       return;
     }
+
     hotkeyEl.value = '';
     setStatus('快捷键已清空。', 'success');
   } finally {
@@ -55,8 +70,8 @@ async function clearHotkeyInput() {
 
 function updateModeFields() {
   const engine = engineEl.value;
-  llmFieldsEl.style.display = engine === 'llm' ? 'grid' : 'none';
-  apiSectionEl.style.display = engine === 'api' ? 'grid' : 'none';
+  llmFieldsEl.hidden = engine !== 'llm';
+  apiSectionEl.hidden = engine !== 'api';
 
   if (engine === 'api') {
     translationApiUrlEl.readOnly = false;
@@ -84,7 +99,7 @@ function buildAccelerator(event) {
     baseKey = code.slice(3);
   } else if (code.startsWith('Digit')) {
     baseKey = code.slice(5);
-  } else if (/^F\\d{1,2}$/.test(code)) {
+  } else if (/^F\d{1,2}$/.test(code)) {
     baseKey = code;
   } else if (code.startsWith('Arrow')) {
     baseKey = code.replace('Arrow', '');
@@ -117,6 +132,7 @@ function buildAccelerator(event) {
   if (!parts.length) {
     return null;
   }
+
   return `${parts.join('+')}+${baseKey}`;
 }
 
@@ -140,7 +156,7 @@ async function loadSettings() {
 }
 
 engineEl.addEventListener('change', updateModeFields);
-translationApiUrlEl?.addEventListener('input', () => {
+translationApiUrlEl.addEventListener('input', () => {
   if (engineEl.value === 'api') {
     cachedApiUrl = translationApiUrlEl.value.trim();
   }
@@ -148,33 +164,42 @@ translationApiUrlEl?.addEventListener('input', () => {
 
 formEl.addEventListener('submit', async (event) => {
   event.preventDefault();
+  saveBtn.loading = true;
   setStatus('保存中…');
 
-  const payload = {
-    engine: engineEl.value,
-    sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
-    targetLang: normalizeLang(targetLangEl.value, 'zh-CN'),
-    llmApiUrl: llmApiUrlEl.value.trim(),
-    llmApiKey: llmApiKeyEl.value.trim(),
-    llmModel: llmModelEl.value.trim()
-  };
-  if (engineEl.value === 'api') {
-    payload.translationApiUrl = translationApiUrlEl.value.trim();
-  }
+  try {
+    const payload = {
+      engine: engineEl.value,
+      sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
+      targetLang: normalizeLang(targetLangEl.value, 'zh-CN'),
+      llmApiUrl: llmApiUrlEl.value.trim(),
+      llmApiKey: llmApiKeyEl.value.trim(),
+      llmModel: llmModelEl.value.trim()
+    };
 
-  const result = await window.snapTranslate.setSettings(payload);
-  if (!result.ok) {
-    setStatus(result.error || '保存失败。', 'error');
-    return;
-  }
+    if (engineEl.value === 'api') {
+      payload.translationApiUrl = translationApiUrlEl.value.trim();
+    }
 
-  setStatus('设置已保存。', 'success');
+    const result = await window.snapTranslate.setSettings(payload);
+    if (!result.ok) {
+      setStatus(result.error || '保存失败。', 'error');
+      return;
+    }
+
+    setStatus('设置已保存。', 'success');
+  } catch (error) {
+    setStatus(`保存失败：${error.message || error}`, 'error');
+  } finally {
+    saveBtn.loading = false;
+  }
 });
 
 hotkeyEl.addEventListener('keydown', async (event) => {
   if (hotkeyBinding) {
     return;
   }
+
   event.preventDefault();
   event.stopPropagation();
 
@@ -191,12 +216,14 @@ hotkeyEl.addEventListener('keydown', async (event) => {
 
   hotkeyEl.value = accelerator;
   hotkeyBinding = true;
+
   try {
     const result = await window.snapTranslate.updateHotkey(accelerator);
     if (!result.ok) {
       setStatus(`快捷键更新失败：${getHotkeyErrorMessage(result.error)}`, 'error');
       return;
     }
+
     setStatus(`快捷键已更新为 ${accelerator}`, 'success');
   } catch (error) {
     setStatus(`快捷键更新失败：${error.message || error}`, 'error');
@@ -205,16 +232,18 @@ hotkeyEl.addEventListener('keydown', async (event) => {
   }
 });
 
-backBtn?.addEventListener('click', async () => {
+backBtn.addEventListener('click', async () => {
   if (!window.snapTranslate?.openTranslate) {
     setStatus('无法返回翻译页。', 'error');
     return;
   }
+
   try {
-    await window.snapTranslate.openTranslate();
+    await navigateWithTransition((options) => window.snapTranslate.openTranslate(options), 'back');
   } catch (error) {
     setStatus(`返回失败：${error.message || error}`, 'error');
   }
 });
 
 loadSettings();
+initPageTransition();

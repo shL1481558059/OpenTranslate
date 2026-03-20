@@ -13,8 +13,8 @@ contextBridge.exposeInMainWorld('snapTranslate', {
   setSettings: (settings) => invoke('settings:set', settings),
   updateHotkey: (hotkey) => invoke('hotkey:update', hotkey),
   translateText: (text, options = {}) => invoke('translate:text', { text, ...options }),
-  openSettings: () => invoke('settings:open'),
-  openTranslate: () => invoke('translate:open'),
+  openSettings: (options = {}) => invoke('settings:open', options),
+  openTranslate: (options = {}) => invoke('translate:open', options),
   onSelectionWindows: (handler) => on('selection:windows', handler),
   onOverlayRender: (handler) => on('overlay:render', handler)
 });

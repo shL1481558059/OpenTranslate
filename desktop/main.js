@@ -612,8 +612,10 @@ function ensureTranslateWindow() {
     return translateWindow;
   }
   translateWindow = new BrowserWindow({
-    width: 640,
-    height: 520,
+    width: 900,
+    height: 680,
+    minWidth: 760,
+    minHeight: 560,
     show: true,
     resizable: true,
     title: 'Manual Translate',
@@ -635,16 +637,27 @@ function ensureTranslateWindow() {
   return translateWindow;
 }
 
-function showTranslateWindow() {
+function buildPageLoadOptions(options = {}) {
+  if (!options || !options.nav) {
+    return undefined;
+  }
+  return {
+    query: {
+      nav: String(options.nav)
+    }
+  };
+}
+
+function showTranslateWindow(options = {}) {
   const win = ensureTranslateWindow();
-  win.loadFile(path.join(__dirname, 'ui', 'translate.html'));
+  win.loadFile(path.join(__dirname, 'ui', 'translate.html'), buildPageLoadOptions(options));
   win.show();
   win.focus();
 }
 
-function showSettingsWindow() {
+function showSettingsWindow(options = {}) {
   const win = ensureTranslateWindow();
-  win.loadFile(path.join(__dirname, 'ui', 'settings.html'));
+  win.loadFile(path.join(__dirname, 'ui', 'settings.html'), buildPageLoadOptions(options));
   win.show();
   win.focus();
 }
@@ -1012,13 +1025,13 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('settings:get', () => settings);
 
-  ipcMain.handle('settings:open', () => {
-    showSettingsWindow();
+  ipcMain.handle('settings:open', (_, options = {}) => {
+    showSettingsWindow(options);
     return true;
   });
 
-  ipcMain.handle('translate:open', () => {
-    showTranslateWindow();
+  ipcMain.handle('translate:open', (_, options = {}) => {
+    showTranslateWindow(options);
     return true;
   });
 

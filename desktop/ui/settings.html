@@ -1,128 +1,109 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="wa-theme-default wa-brand-indigo">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Settings</title>
-    <link rel="stylesheet" href="./settings.css" />
+    <link rel="stylesheet" href="../../node_modules/@awesome.me/webawesome/dist-cdn/styles/webawesome.css" />
+    <link rel="stylesheet" href="./theme.css?v=3" />
+    <link rel="stylesheet" href="./settings.css?v=5" />
   </head>
   <body>
-    <main class="page">
-      <header class="top">
-        <div>
-          <p class="label">Settings</p>
-          <h1>翻译设置</h1>
-          <p class="desc">引擎、接口与快捷键。</p>
-        </div>
-        <div class="actions">
-          <button id="backBtn" type="button" class="ghost">返回</button>
-          <button type="submit" form="settingsForm">保存设置</button>
-        </div>
-      </header>
-
-      <form id="settingsForm" class="panel">
-        <section class="section">
-          <div class="section-title">
-            <h2>引擎选择</h2>
-            <p>翻译接口或直接连接 LLM。</p>
+    <main class="page page-settings">
+      <section class="shell">
+        <header class="shell-header">
+          <div class="shell-copy">
+            <h1>翻译设置</h1>
+            <p>接口、语言和快捷键都集中在这里，结构尽量保持简单直接。</p>
           </div>
-          <label class="field">
-            <span>翻译模式</span>
-            <select id="engine">
-              <option value="api">翻译接口</option>
-              <option value="llm">直连 LLM</option>
-            </select>
-          </label>
-        </section>
 
-        <section class="section">
-          <div class="section-title">
-            <h2>翻译语言</h2>
-            <p>截图与手动翻译共用。</p>
+          <div class="actions">
+            <wa-button id="backBtn" appearance="plain" variant="neutral">返回</wa-button>
+            <wa-button id="saveBtn" form="settingsForm" type="submit" variant="brand">保存设置</wa-button>
           </div>
-          <label class="field">
-            <span>源语言</span>
-            <input id="sourceLang" list="langList" type="text" placeholder="auto" />
-            <small class="hint">可输入 BCP-47 语言代码，如 en、ja、zh-CN。</small>
-          </label>
-          <label class="field">
-            <span>目标语言</span>
-            <input id="targetLang" list="langList" type="text" placeholder="zh-CN" />
-          </label>
-        </section>
+        </header>
 
-        <section class="section" id="apiSection">
-          <div class="section-title">
-            <h2>接口配置</h2>
-            <p>截图与手动翻译共用。</p>
-          </div>
-          <label class="field">
-            <span>翻译接口地址</span>
-            <input id="translationApiUrl" type="text" placeholder="http://127.0.0.1:8787/v1/translate" />
-          </label>
-        </section>
+        <wa-callout id="status" class="status-callout" appearance="outlined" variant="neutral" size="small" hidden></wa-callout>
 
-        <section id="llmFields" class="section">
-          <div class="section-title">
-            <h2>LLM 直连</h2>
-            <p>OpenAI 兼容接口（chat/completions）。</p>
-          </div>
-          <label class="field">
-            <span>LLM API 地址</span>
-            <input id="llmApiUrl" type="text" placeholder="https://api.openai.com/v1" />
-          </label>
-          <label class="field">
-            <span>LLM API Key</span>
-            <input id="llmApiKey" type="password" />
-          </label>
-          <label class="field">
-            <span>LLM Model</span>
-            <input id="llmModel" type="text" placeholder="gpt-4o-mini" />
-          </label>
-        </section>
+        <form id="settingsForm" class="settings-grid">
+          <section class="section-block">
+            <div class="section-head">
+              <h2>翻译模式</h2>
+              <p>选择走翻译接口，还是直接连接 LLM。</p>
+            </div>
 
-        <section class="section">
-          <div class="section-title">
-            <h2>快捷键</h2>
-            <p>点击输入框后按组合键即可绑定。</p>
-          </div>
-          <label class="field">
-            <span>截图快捷键</span>
-            <input id="hotkey" type="text" placeholder="点击后按下组合键" />
-            <small class="hint">支持 Command / Control / Shift / Alt；按 Esc 清空。</small>
-          </label>
-        </section>
+            <wa-select id="engine" label="模式">
+              <wa-option value="api">翻译接口</wa-option>
+              <wa-option value="llm">直连 LLM</wa-option>
+            </wa-select>
+          </section>
 
-        <div class="status" id="status"></div>
-      </form>
+          <section class="section-block">
+            <div class="section-head">
+              <h2>语言</h2>
+              <p>手动翻译和截图翻译会共用这里的默认语言。</p>
+            </div>
 
-      <datalist id="langList">
-        <option value="auto">自动检测</option>
-        <option value="zh-CN">简体中文</option>
-        <option value="zh-TW">繁体中文</option>
-        <option value="en">英语</option>
-        <option value="ja">日语</option>
-        <option value="ko">韩语</option>
-        <option value="fr">法语</option>
-        <option value="de">德语</option>
-        <option value="es">西班牙语</option>
-        <option value="ru">俄语</option>
-        <option value="pt">葡萄牙语</option>
-        <option value="it">意大利语</option>
-        <option value="ar">阿拉伯语</option>
-        <option value="hi">印地语</option>
-        <option value="th">泰语</option>
-        <option value="vi">越南语</option>
-        <option value="id">印尼语</option>
-        <option value="tr">土耳其语</option>
-        <option value="nl">荷兰语</option>
-        <option value="pl">波兰语</option>
-        <option value="uk">乌克兰语</option>
-        <option value="sv">瑞典语</option>
-      </datalist>
+            <div class="two-col">
+              <wa-input
+                id="sourceLang"
+                label="源语言"
+                placeholder="auto"
+                hint="例如 auto、en、ja、zh-CN"
+                autocomplete="off"
+              ></wa-input>
 
-      <footer class="foot"></footer>
+              <wa-input id="targetLang" label="目标语言" placeholder="zh-CN" autocomplete="off"></wa-input>
+            </div>
+          </section>
+
+          <section id="apiSection" class="section-block">
+            <div class="section-head">
+              <h2>接口配置</h2>
+              <p>翻译接口模式下会使用这里的地址。</p>
+            </div>
+
+            <wa-input
+              id="translationApiUrl"
+              label="翻译接口地址"
+              placeholder="http://127.0.0.1:8787/v1/translate"
+              autocomplete="off"
+            ></wa-input>
+          </section>
+
+          <section id="llmFields" class="section-block">
+            <div class="section-head">
+              <h2>LLM 配置</h2>
+              <p>支持 OpenAI 兼容接口。</p>
+            </div>
+
+            <div class="settings-stack">
+              <wa-input
+                id="llmApiUrl"
+                label="LLM API 地址"
+                placeholder="https://api.openai.com/v1"
+                autocomplete="off"
+              ></wa-input>
+
+              <div class="two-col">
+                <wa-input id="llmApiKey" label="LLM API Key" type="password" password-toggle autocomplete="off"></wa-input>
+                <wa-input id="llmModel" label="LLM Model" placeholder="gpt-4o-mini" autocomplete="off"></wa-input>
+              </div>
+            </div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h2>快捷键</h2>
+              <p>点击输入框后按组合键绑定，按 Esc 可清空。</p>
+            </div>
+
+            <wa-input id="hotkey" label="截图快捷键" placeholder="点击后按下组合键" autocomplete="off"></wa-input>
+          </section>
+        </form>
+      </section>
     </main>
-    <script src="./settings.js"></script>
+
+    <script type="module" src="./settings.js?v=5"></script>
   </body>
 </html>

@@ -1,0 +1,216 @@
+:root {
+  --titlebar-offset: 32px;
+  --wa-font-family-body: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
+  --wa-font-family-heading: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
+  --wa-font-size-scale: 0.9;
+  --wa-border-radius-l: 16px;
+  --wa-border-radius-m: 12px;
+  --wa-border-radius-s: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+body {
+  overflow: hidden;
+  color: var(--wa-color-text-normal);
+  font-family: var(--wa-font-family-body);
+  background:
+    radial-gradient(circle at top center, color-mix(in oklab, var(--wa-color-brand-95), white 60%), transparent 34%),
+    linear-gradient(180deg, #f7f8fb, #eef2f8);
+}
+
+.page {
+  max-width: 1120px;
+  height: calc(100vh - var(--titlebar-offset) - env(safe-area-inset-top));
+  margin: calc(var(--titlebar-offset) + env(safe-area-inset-top)) auto 0;
+  padding:
+    18px calc(18px + env(safe-area-inset-right))
+    calc(22px + env(safe-area-inset-bottom))
+    calc(18px + env(safe-area-inset-left));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100%;
+  transform: translate3d(0, 0, 0);
+  transform-origin: center top;
+  will-change: transform, opacity, filter;
+}
+
+.shell-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  -webkit-app-region: drag;
+}
+
+.shell-copy {
+  display: grid;
+  gap: 6px;
+  max-width: 46ch;
+}
+
+.shell-copy h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.06;
+  letter-spacing: -0.03em;
+}
+
+.shell-copy p {
+  margin: 0;
+  color: var(--wa-color-text-quiet);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.actions wa-button,
+.page wa-button,
+.page wa-input,
+.page wa-select,
+.page wa-textarea {
+  -webkit-app-region: no-drag;
+}
+
+.actions wa-button::part(base) {
+  min-width: 88px;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.section-head p {
+  margin: 0;
+  color: var(--wa-color-text-quiet);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.status-callout[hidden] {
+  display: none;
+}
+
+.page-entering,
+.page-leaving {
+  pointer-events: none;
+}
+
+.page-enter-forward {
+  animation: page-enter-forward 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.page-enter-back {
+  animation: page-enter-back 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.page-leave-forward {
+  animation: page-leave-forward 190ms ease both;
+}
+
+.page-leave-back {
+  animation: page-leave-back 190ms ease both;
+}
+
+@keyframes page-enter-forward {
+  from {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translate3d(34px, 0, 0) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes page-enter-back {
+  from {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translate3d(-34px, 0, 0) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes page-leave-forward {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translate3d(-28px, 0, 0) scale(0.985);
+  }
+}
+
+@keyframes page-leave-back {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translate3d(28px, 0, 0) scale(0.985);
+  }
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding:
+      14px calc(14px + env(safe-area-inset-right))
+      calc(18px + env(safe-area-inset-bottom))
+      calc(14px + env(safe-area-inset-left));
+  }
+
+  .shell {
+    gap: 14px;
+  }
+
+  .shell-copy h1 {
+    font-size: 24px;
+  }
+}
