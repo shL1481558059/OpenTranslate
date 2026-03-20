@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeImage, Menu, Tray } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeImage, Menu, Tray, dialog } = require('electron');
 
 const APP_NAME = 'OpenTranslate';
 app.setName(APP_NAME);
@@ -19,6 +19,7 @@ const { normalizeHotkey, hasModifierHotkey } = require('./lib/hotkey-rules');
 
 const CAPTURE_DELAY_MS = Number(process.env.SNAP_TRANSLATE_CAPTURE_DELAY_MS || 280);
 const DEFAULT_API_URL = process.env.TRANSLATION_API_URL || 'http://127.0.0.1:8787/v1/translate';
+const LOGIN_ITEM_SUPPORTED_PLATFORMS = new Set(['darwin', 'win32']);
 const execFileAsync = promisify(execFile);
 
 let selectionWindow = null;
@@ -120,6 +121,161 @@ function saveSettings(next) {
   settings = applyApiDefaults({ ...settings, ...sanitizeSettings(next) });
   fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8');
   return settings;
+}
+
+function supportsLaunchAtLogin() {
+  return LOGIN_ITEM_SUPPORTED_PLATFORMS.has(process.platform);
+}
+
+function canManageLaunchAtLogin() {
+  return supportsLaunchAtLogin() && app.isPackaged;
+}
+
+function requiresApplicationsInstallForLaunchAtLogin() {
+  return process.platform === 'darwin' && app.isPackaged && !app.isInApplicationsFolder();
+}
+
+function getLaunchAtLoginState() {
+  if (!supportsLaunchAtLogin()) {
+    return {
+      launchAtLogin: false,
+      launchAtLoginAvailable: false,
+      launchAtLoginStatus: 'unsupported'
+    };
+  }
+
+  if (!app.isPackaged) {
+    return {
+      launchAtLogin: false,
+      launchAtLoginAvailable: false,
+      launchAtLoginStatus: 'unavailable_in_dev'
+    };
+  }
+
+  if (requiresApplicationsInstallForLaunchAtLogin()) {
+    return {
+      launchAtLogin: false,
+      launchAtLoginAvailable: false,
+      launchAtLoginStatus: 'requires_applications_folder'
+    };
+  }
+
+  try {
+    const loginItem = app.getLoginItemSettings();
+    return {
+      launchAtLogin: Boolean(loginItem.openAtLogin),
+      launchAtLoginAvailable: true,
+      launchAtLoginStatus: typeof loginItem.status === 'string' ? loginItem.status : 'enabled'
+    };
+  } catch (error) {
+    console.warn('[desktop] failed to read login item settings', error?.message || error);
+    return {
+      launchAtLogin: false,
+      launchAtLoginAvailable: false,
+      launchAtLoginStatus: 'error'
+    };
+  }
+}
+
+function buildRendererSettings() {
+  return {
+    ...settings,
+    ...getLaunchAtLoginState()
+  };
+}
+
+function updateLaunchAtLogin(openAtLogin) {
+  if (!supportsLaunchAtLogin()) {
+    return { ok: false, error: 'launch_at_login_unsupported' };
+  }
+
+  if (!canManageLaunchAtLogin()) {
+    return { ok: false, error: 'launch_at_login_unavailable_in_dev' };
+  }
+
+  if (requiresApplicationsInstallForLaunchAtLogin()) {
+    return { ok: false, error: 'launch_at_login_requires_applications_folder' };
+  }
+
+  try {
+    const current = app.getLoginItemSettings();
+    if (openAtLogin && current?.status === 'not-found') {
+      return repairLaunchAtLogin(true);
+    }
+    app.setLoginItemSettings({
+      openAtLogin: Boolean(openAtLogin)
+    });
+    return { ok: true, settings: buildRendererSettings() };
+  } catch (error) {
+    console.error('[desktop] failed to update login item settings', error);
+    return { ok: false, error: 'launch_at_login_update_failed' };
+  }
+}
+
+function repairLaunchAtLogin(openAtLogin = false) {
+  if (!supportsLaunchAtLogin()) {
+    return { ok: false, error: 'launch_at_login_unsupported' };
+  }
+
+  if (!canManageLaunchAtLogin()) {
+    return { ok: false, error: 'launch_at_login_unavailable_in_dev' };
+  }
+
+  if (requiresApplicationsInstallForLaunchAtLogin()) {
+    return { ok: false, error: 'launch_at_login_requires_applications_folder' };
+  }
+
+  try {
+    // Remove any stale registration first so macOS can bind the current bundle path again.
+    app.setLoginItemSettings({ openAtLogin: false });
+
+    if (openAtLogin) {
+      app.setLoginItemSettings({ openAtLogin: true });
+    }
+
+    return { ok: true, settings: buildRendererSettings() };
+  } catch (error) {
+    console.error('[desktop] failed to repair login item settings', error);
+    return { ok: false, error: 'launch_at_login_repair_failed' };
+  }
+}
+
+async function moveToApplicationsFolder() {
+  if (process.platform !== 'darwin') {
+    return { ok: false, error: 'move_to_applications_unsupported' };
+  }
+
+  if (!app.isPackaged) {
+    return { ok: false, error: 'move_to_applications_unavailable_in_dev' };
+  }
+
+  if (app.isInApplicationsFolder()) {
+    return { ok: true, alreadyInApplicationsFolder: true, settings: buildRendererSettings() };
+  }
+
+  const { response } = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['取消', '移动'],
+    defaultId: 1,
+    cancelId: 0,
+    message: '将 OpenTranslate 移动到“应用程序”文件夹？',
+    detail: '开机自启依赖应用位于“应用程序”文件夹中。移动成功后，应用会自动退出并重新打开。'
+  });
+
+  if (response !== 1) {
+    return { ok: false, error: 'move_to_applications_cancelled' };
+  }
+
+  try {
+    const moved = app.moveToApplicationsFolder();
+    if (!moved) {
+      return { ok: false, error: 'move_to_applications_cancelled' };
+    }
+    return { ok: true, moved: true, relaunching: true };
+  } catch (error) {
+    console.error('[desktop] failed to move app to Applications', error);
+    return { ok: false, error: 'move_to_applications_failed' };
+  }
 }
 
 function registerHotkey(hotkey) {
@@ -623,6 +779,12 @@ function ensureTranslateWindow() {
     titleBarStyle: 'hidden',
     transparent: true,
     backgroundColor: '#00000000',
+    ...(process.platform === 'darwin'
+      ? {
+          vibrancy: 'under-window',
+          visualEffectState: 'active'
+        }
+      : {}),
     icon: appIconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1023,7 +1185,11 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('settings:get', () => settings);
+  ipcMain.handle('settings:get', () => buildRendererSettings());
+  ipcMain.handle('app:move-to-applications', async () => moveToApplicationsFolder());
+  ipcMain.handle('launch-at-login:repair', async (_, openAtLogin = false) =>
+    repairLaunchAtLogin(Boolean(openAtLogin))
+  );
 
   ipcMain.handle('settings:open', (_, options = {}) => {
     showSettingsWindow(options);
@@ -1038,6 +1204,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:set', async (_, next) => {
     const payload = sanitizeSettings(next);
     let hotkeyError = null;
+    let launchAtLoginError = null;
     if (Object.hasOwn(payload, 'hotkey') && payload.hotkey !== settings.hotkey) {
       const result = updateHotkey(payload.hotkey);
       if (!result.ok) {
@@ -1045,8 +1212,21 @@ app.whenReady().then(async () => {
         delete payload.hotkey;
       }
     }
+    if (typeof next?.launchAtLogin === 'boolean') {
+      const currentLaunchAtLogin = getLaunchAtLoginState().launchAtLogin;
+      if (next.launchAtLogin !== currentLaunchAtLogin) {
+        const result = updateLaunchAtLogin(next.launchAtLogin);
+        if (!result.ok) {
+          launchAtLoginError = result.error || 'launch_at_login_update_failed';
+        }
+      }
+    }
     saveSettings(payload);
-    return { ok: !hotkeyError, error: hotkeyError, settings };
+    return {
+      ok: !hotkeyError && !launchAtLoginError,
+      error: hotkeyError || launchAtLoginError,
+      settings: buildRendererSettings()
+    };
   });
 
   ipcMain.handle('hotkey:update', async (_, hotkey) => updateHotkey(hotkey));

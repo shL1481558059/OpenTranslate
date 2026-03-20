@@ -1,0 +1,30 @@
+name: opentranslate
+
+services:
+  api:
+    image: opentranslate-api:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: opentranslate-api-compose
+    restart: unless-stopped
+    ports:
+      - "${OPENTRANSLATE_API_PORT:-8788}:8787"
+    environment:
+      TRANSLATION_API_HOST: 0.0.0.0
+      TRANSLATION_API_PORT: 8787
+    volumes:
+      - ./models:/app/models
+      - ./api/config.json:/app/api/config.json
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then((res) => process.exit(res.ok ? 0 : 1)).catch(() => process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

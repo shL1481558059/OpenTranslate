@@ -1,5 +1,8 @@
 :root {
   --titlebar-offset: 32px;
+  --window-glass: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.07));
+  --window-glass-strong: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.1));
+  --window-glass-border: rgba(255, 255, 255, 0.18);
   --wa-font-family-body: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
   --wa-font-family-heading: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
   --wa-font-size-scale: 0.9;
@@ -16,27 +19,45 @@ html,
 body {
   margin: 0;
   min-height: 100vh;
+  background: transparent;
 }
 
 body {
   overflow: hidden;
   color: var(--wa-color-text-normal);
   font-family: var(--wa-font-family-body);
-  background:
-    radial-gradient(circle at top center, color-mix(in oklab, var(--wa-color-brand-95), white 60%), transparent 34%),
-    linear-gradient(180deg, #f7f8fb, #eef2f8);
+  background: transparent;
+}
+
+.window-drag-region {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--titlebar-offset) + env(safe-area-inset-top));
+  background: transparent;
+  -webkit-app-region: drag;
+  z-index: 10;
 }
 
 .page {
   max-width: 1120px;
-  height: calc(100vh - var(--titlebar-offset) - env(safe-area-inset-top));
-  margin: calc(var(--titlebar-offset) + env(safe-area-inset-top)) auto 0;
+  height: 100vh;
+  margin: 0 auto;
   padding:
-    18px calc(18px + env(safe-area-inset-right))
+    calc(18px + var(--titlebar-offset) + env(safe-area-inset-top)) calc(18px + env(safe-area-inset-right))
     calc(22px + env(safe-area-inset-bottom))
     calc(18px + env(safe-area-inset-left));
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  background: var(--window-glass);
+  border-left: 1px solid var(--window-glass-border);
+  border-right: 1px solid var(--window-glass-border);
+  border-bottom: 1px solid var(--window-glass-border);
+  border-radius: 0;
+  backdrop-filter: blur(20px) saturate(1.1);
+  -webkit-backdrop-filter: blur(20px) saturate(1.1);
+  box-shadow: 0 20px 60px rgba(19, 30, 44, 0.12);
 }
 
 .shell {
@@ -55,7 +76,6 @@ body {
   align-items: flex-start;
   gap: 16px;
   flex-wrap: wrap;
-  -webkit-app-region: drag;
 }
 
 .shell-copy {

@@ -1,0 +1,11 @@
+.DS_Store
+.git
+.gitignore
+.venv
+.venv*
+.env
+node_modules
+dist
+tests
+desktop
+models

@@ -4,13 +4,33 @@
   gap: 14px;
 }
 
+.toggle-row {
+  display: grid;
+  gap: 8px;
+}
+
+.toggle-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.field-note {
+  margin: 0;
+  color: var(--wa-color-text-quiet);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .section-block {
   display: grid;
   gap: 14px;
   padding: 16px;
-  border: 1px solid color-mix(in oklab, var(--wa-color-surface-border), transparent 12%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 16px;
-  background: color-mix(in oklab, white 88%, var(--wa-color-brand-95));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.06));
+  backdrop-filter: blur(12px) saturate(1.04);
+  -webkit-backdrop-filter: blur(12px) saturate(1.04);
 }
 
 .two-col {

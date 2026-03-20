@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="./settings.css?v=5" />
   </head>
   <body>
+    <div class="window-drag-region" aria-hidden="true"></div>
     <main class="page page-settings">
       <section class="shell">
         <header class="shell-header">
@@ -99,6 +100,26 @@
             </div>
 
             <wa-input id="hotkey" label="截图快捷键" placeholder="点击后按下组合键" autocomplete="off"></wa-input>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h2>启动</h2>
+              <p>控制 OpenTranslate 是否在系统登录后自动启动。</p>
+            </div>
+
+            <div class="toggle-row">
+              <wa-switch id="launchAtLogin" size="medium">开机自启</wa-switch>
+              <p id="launchAtLoginHelp" class="field-note"></p>
+              <div class="toggle-actions">
+                <wa-button id="repairLaunchAtLoginBtn" appearance="outlined" variant="neutral" size="small" hidden>
+                  修复自启项
+                </wa-button>
+                <wa-button id="moveToApplicationsBtn" appearance="outlined" variant="neutral" size="small" hidden>
+                  移到应用程序文件夹
+                </wa-button>
+              </div>
+            </div>
           </section>
         </form>
       </section>

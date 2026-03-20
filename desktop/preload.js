@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('snapTranslate', {
   closeOverlay: () => invoke('overlay:close'),
   getSettings: () => invoke('settings:get'),
   setSettings: (settings) => invoke('settings:set', settings),
+  moveToApplicationsFolder: () => invoke('app:move-to-applications'),
+  repairLaunchAtLogin: (openAtLogin = false) => invoke('launch-at-login:repair', openAtLogin),
   updateHotkey: (hotkey) => invoke('hotkey:update', hotkey),
   translateText: (text, options = {}) => invoke('translate:text', { text, ...options }),
   openSettings: (options = {}) => invoke('settings:open', options),

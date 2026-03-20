@@ -15,8 +15,13 @@ const llmFieldsEl = document.getElementById('llmFields');
 const statusEl = document.getElementById('status');
 const backBtn = document.getElementById('backBtn');
 const saveBtn = document.getElementById('saveBtn');
+const launchAtLoginEl = document.getElementById('launchAtLogin');
+const launchAtLoginHelpEl = document.getElementById('launchAtLoginHelp');
+const repairLaunchAtLoginBtn = document.getElementById('repairLaunchAtLoginBtn');
+const moveToApplicationsBtn = document.getElementById('moveToApplicationsBtn');
 let hotkeyBinding = false;
 let cachedApiUrl = '';
+let launchAtLoginState = null;
 
 function setStatus(message, type) {
   if (!message) {
@@ -42,6 +47,89 @@ function getHotkeyErrorMessage(errorCode) {
     return '快捷键格式无效。';
   }
   return errorCode || '未知错误';
+}
+
+function getSettingsErrorMessage(errorCode) {
+  if (!errorCode) {
+    return '保存失败。';
+  }
+  if (errorCode.startsWith('hotkey_') || errorCode === 'invalid_hotkey') {
+    return getHotkeyErrorMessage(errorCode);
+  }
+  if (errorCode === 'launch_at_login_unsupported') {
+    return '当前平台不支持开机自启。';
+  }
+  if (errorCode === 'launch_at_login_unavailable_in_dev') {
+    return '开发环境下不提供开机自启，请使用打包后的应用。';
+  }
+  if (errorCode === 'launch_at_login_requires_applications_folder') {
+    return '请先把应用移到“应用程序”文件夹，然后再开启开机自启。';
+  }
+  if (errorCode === 'launch_at_login_update_failed') {
+    return '开机自启更新失败。';
+  }
+  if (errorCode === 'launch_at_login_repair_failed') {
+    return '修复开机自启失败。';
+  }
+  if (errorCode === 'move_to_applications_unsupported') {
+    return '当前平台不支持移动到“应用程序”文件夹。';
+  }
+  if (errorCode === 'move_to_applications_unavailable_in_dev') {
+    return '开发环境下不能移动应用，请使用打包后的应用。';
+  }
+  if (errorCode === 'move_to_applications_cancelled') {
+    return '已取消移动到“应用程序”文件夹。';
+  }
+  if (errorCode === 'move_to_applications_failed') {
+    return '移动到“应用程序”文件夹失败。';
+  }
+  return errorCode;
+}
+
+function getLaunchAtLoginHelp(settings) {
+  if (!settings?.launchAtLoginAvailable) {
+    if (settings?.launchAtLoginStatus === 'unsupported') {
+      return '当前平台暂不支持开机自启。';
+    }
+    if (settings?.launchAtLoginStatus === 'unavailable_in_dev') {
+      return '开发环境下不建议启用开机自启，打包后的应用中可用。';
+    }
+    if (settings?.launchAtLoginStatus === 'requires_applications_folder') {
+      return '当前应用不在“应用程序”文件夹中，先移动过去再开启开机自启。';
+    }
+    return '当前环境无法管理开机自启。';
+  }
+
+  if (settings.launchAtLoginStatus === 'requires-approval') {
+    return '系统已收到请求，但仍需在系统设置里批准。';
+  }
+
+  if (settings.launchAtLoginStatus === 'not-found') {
+    return '系统里残留了旧的开机自启记录，修复后就能重新绑定当前应用。';
+  }
+
+  return '登录系统后自动启动 OpenTranslate。';
+}
+
+function syncLaunchAtLoginActions(settings) {
+  const status = settings?.launchAtLoginStatus || '';
+
+  if (repairLaunchAtLoginBtn) {
+    repairLaunchAtLoginBtn.hidden = status !== 'not-found';
+    repairLaunchAtLoginBtn.textContent = launchAtLoginEl.checked ? '修复并启用自启' : '修复自启项';
+  }
+
+  if (moveToApplicationsBtn) {
+    moveToApplicationsBtn.hidden = status !== 'requires_applications_folder';
+  }
+}
+
+function applyLaunchAtLoginState(settings) {
+  launchAtLoginState = settings || null;
+  launchAtLoginEl.checked = !!settings?.launchAtLogin;
+  launchAtLoginEl.disabled = !settings?.launchAtLoginAvailable;
+  launchAtLoginHelpEl.textContent = getLaunchAtLoginHelp(settings);
+  syncLaunchAtLoginActions(settings);
 }
 
 async function clearHotkeyInput() {
@@ -149,6 +237,7 @@ async function loadSettings() {
     llmModelEl.value = settings.llmModel || '';
     hotkeyEl.value = settings.hotkey || '';
     hotkeyEl.readOnly = true;
+    applyLaunchAtLoginState(settings);
     updateModeFields();
   } catch (error) {
     setStatus('加载设置失败。', 'error');
@@ -160,6 +249,12 @@ translationApiUrlEl.addEventListener('input', () => {
   if (engineEl.value === 'api') {
     cachedApiUrl = translationApiUrlEl.value.trim();
   }
+});
+launchAtLoginEl.addEventListener('change', () => {
+  syncLaunchAtLoginActions({
+    ...launchAtLoginState,
+    launchAtLogin: !!launchAtLoginEl.checked
+  });
 });
 
 formEl.addEventListener('submit', async (event) => {
@@ -174,7 +269,8 @@ formEl.addEventListener('submit', async (event) => {
       targetLang: normalizeLang(targetLangEl.value, 'zh-CN'),
       llmApiUrl: llmApiUrlEl.value.trim(),
       llmApiKey: llmApiKeyEl.value.trim(),
-      llmModel: llmModelEl.value.trim()
+      llmModel: llmModelEl.value.trim(),
+      launchAtLogin: !!launchAtLoginEl.checked
     };
 
     if (engineEl.value === 'api') {
@@ -182,8 +278,11 @@ formEl.addEventListener('submit', async (event) => {
     }
 
     const result = await window.snapTranslate.setSettings(payload);
+    if (result?.settings) {
+      applyLaunchAtLoginState(result.settings);
+    }
     if (!result.ok) {
-      setStatus(result.error || '保存失败。', 'error');
+      setStatus(getSettingsErrorMessage(result.error), 'error');
       return;
     }
 
@@ -242,6 +341,68 @@ backBtn.addEventListener('click', async () => {
     await navigateWithTransition((options) => window.snapTranslate.openTranslate(options), 'back');
   } catch (error) {
     setStatus(`返回失败：${error.message || error}`, 'error');
+  }
+});
+
+repairLaunchAtLoginBtn?.addEventListener('click', async () => {
+  if (!window.snapTranslate?.repairLaunchAtLogin) {
+    setStatus('当前版本不支持修复开机自启。', 'error');
+    return;
+  }
+
+  repairLaunchAtLoginBtn.loading = true;
+  setStatus('正在修复开机自启…');
+
+  try {
+    const result = await window.snapTranslate.repairLaunchAtLogin(!!launchAtLoginEl.checked);
+    if (result?.settings) {
+      applyLaunchAtLoginState(result.settings);
+    }
+    if (!result?.ok) {
+      setStatus(getSettingsErrorMessage(result?.error), 'error');
+      return;
+    }
+
+    setStatus(launchAtLoginEl.checked ? '开机自启已修复并启用。' : '开机自启记录已修复。', 'success');
+  } catch (error) {
+    setStatus(`修复失败：${error.message || error}`, 'error');
+  } finally {
+    repairLaunchAtLoginBtn.loading = false;
+  }
+});
+
+moveToApplicationsBtn?.addEventListener('click', async () => {
+  if (!window.snapTranslate?.moveToApplicationsFolder) {
+    setStatus('当前版本不支持移动应用位置。', 'error');
+    return;
+  }
+
+  moveToApplicationsBtn.loading = true;
+
+  try {
+    const result = await window.snapTranslate.moveToApplicationsFolder();
+    if (result?.settings) {
+      applyLaunchAtLoginState(result.settings);
+    }
+    if (!result?.ok) {
+      if (result?.error !== 'move_to_applications_cancelled') {
+        setStatus(getSettingsErrorMessage(result?.error), 'error');
+      } else {
+        setStatus(getSettingsErrorMessage(result?.error));
+      }
+      return;
+    }
+
+    if (result?.relaunching) {
+      setStatus('正在移动到“应用程序”文件夹，并重新打开应用…', 'success');
+      return;
+    }
+
+    setStatus('应用已经在“应用程序”文件夹中。', 'success');
+  } catch (error) {
+    setStatus(`移动失败：${error.message || error}`, 'error');
+  } finally {
+    moveToApplicationsBtn.loading = false;
   }
 });
 

@@ -10,5 +10,6 @@ await Promise.all([
   import('../../node_modules/@awesome.me/webawesome/dist-cdn/components/input/input.js'),
   import('../../node_modules/@awesome.me/webawesome/dist-cdn/components/option/option.js'),
   import('../../node_modules/@awesome.me/webawesome/dist-cdn/components/select/select.js'),
+  import('../../node_modules/@awesome.me/webawesome/dist-cdn/components/switch/switch.js'),
   import('../../node_modules/@awesome.me/webawesome/dist-cdn/components/textarea/textarea.js')
 ]);
