@@ -4,13 +4,56 @@
     <meta charset="UTF-8" />
     <title>Overlay</title>
     <script src="./theme-bootstrap.js?v=1"></script>
+    <script type="module" src="./overlay-icons.js"></script>
     <link rel="stylesheet" href="./overlay.css" />
   </head>
   <body>
     <img id="snapshot" alt="" />
     <div id="mask"></div>
     <div id="root"></div>
-    <button id="close" title="Close">x</button>
+    <div id="controls" role="toolbar" aria-label="Overlay controls">
+      <button
+        id="extractSource"
+        class="action-btn action-btn--source"
+        type="button"
+        title="复制原文"
+        aria-label="复制原文"
+        hidden
+      >
+        <span class="action-btn__icon" aria-hidden="true">
+          <wa-icon name="file" library="system"></wa-icon>
+        </span>
+        <span class="action-btn__text">
+          <span class="action-btn__eyebrow" data-role="eyebrow">OCR</span>
+          <span class="action-btn__label" data-role="label">原文</span>
+        </span>
+      </button>
+      <button
+        id="extractTranslated"
+        class="action-btn action-btn--translated"
+        type="button"
+        title="复制译文"
+        aria-label="复制译文"
+        hidden
+      >
+        <span class="action-btn__icon" aria-hidden="true">
+          <wa-icon name="copy" library="system" variant="regular"></wa-icon>
+        </span>
+        <span class="action-btn__text">
+          <span class="action-btn__eyebrow" data-role="eyebrow">TR</span>
+          <span class="action-btn__label" data-role="label">译文</span>
+        </span>
+      </button>
+      <button id="close" class="action-btn close-btn" type="button" title="关闭" aria-label="关闭">
+        <span class="close-btn__icon" aria-hidden="true">
+          <wa-icon name="xmark" library="system"></wa-icon>
+        </span>
+        <span class="action-btn__text">
+          <span class="action-btn__eyebrow">ESC</span>
+          <span class="action-btn__label">关闭</span>
+        </span>
+      </button>
+    </div>
     <script src="./overlay.js"></script>
   </body>
 </html>

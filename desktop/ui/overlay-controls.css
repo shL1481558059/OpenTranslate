@@ -5,41 +5,109 @@ body {
   height: 100%;
   background: transparent;
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
 }
 
 :root {
   color-scheme: light dark;
+  --action-button-width: 82px;
+  --action-button-height: 26px;
+  --button-surface: rgba(10, 15, 24, 0.76);
+  --button-surface-hover: rgba(255, 255, 255, 0.08);
+  --button-surface-active: rgba(255, 255, 255, 0.12);
+  --button-text: rgba(248, 250, 252, 0.98);
+  --button-text-muted: rgba(203, 213, 225, 0.74);
+  --button-icon: rgba(226, 232, 240, 0.88);
+  --button-shadow: 0 12px 32px rgba(2, 6, 23, 0.28);
 }
 
 body {
   position: relative;
 }
 
-#close {
+.action-btn {
   position: absolute;
-  top: 6px;
-  left: 6px;
+  top: 4px;
+  left: 4px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
   border: none;
-  width: 24px;
-  height: 24px;
-  border-radius: 0;
-  background: rgba(255, 255, 255, 0.88);
-  color: #0f172a;
+  width: var(--action-button-width);
+  height: var(--action-button-height);
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--button-surface);
+  color: var(--button-text);
   cursor: pointer;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  box-shadow: var(--button-shadow);
+  -webkit-app-region: no-drag;
 }
 
-:root[data-theme='dark'] #close {
-  background: rgba(0, 0, 0, 0.72);
-  color: #ffffff;
-  box-shadow: none;
+.action-btn:hover {
+  background: var(--button-surface-hover);
+}
+
+.action-btn:active {
+  background: var(--button-surface-active);
+}
+
+.action-btn:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.72);
+  outline-offset: 1px;
+}
+
+.close-btn__icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--button-icon);
+}
+
+.close-btn__icon wa-icon {
+  width: 10px;
+  height: 10px;
+  font-size: 10px;
+}
+
+.action-btn__text {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.action-btn__eyebrow,
+.action-btn__label {
+  display: block;
+  white-space: nowrap;
+}
+
+.action-btn__eyebrow {
+  color: var(--button-text-muted);
+  font-size: 7px;
+  line-height: 1;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.action-btn__label {
+  font-size: 11px;
+  line-height: 1.05;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+:root[data-theme='light'] {
+  --button-surface: rgba(15, 23, 42, 0.76);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme-preference='light']) #close {
-    background: rgba(0, 0, 0, 0.72);
-    color: #ffffff;
-    box-shadow: none;
+  :root:not([data-theme-preference='light']) {
+    --button-surface: rgba(8, 12, 20, 0.8);
   }
 }

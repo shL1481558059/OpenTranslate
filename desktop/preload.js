@@ -29,6 +29,9 @@ const api = {
   closeOverlay() {
     return invoke('overlay:close');
   },
+  writeClipboardText(text) {
+    return invoke('clipboard:write-text', text);
+  },
   setOverlayIgnoreMouseEvents(shouldIgnore = true) {
     return invoke('overlay:set-ignore-mouse-events', shouldIgnore);
   },

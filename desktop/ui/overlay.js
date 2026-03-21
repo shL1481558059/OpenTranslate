@@ -1,9 +1,61 @@
 const root = document.getElementById('root');
 const mask = document.getElementById('mask');
 const snapshotEl = document.getElementById('snapshot');
+const controlsEl = document.getElementById('controls');
+const extractSourceBtn = document.getElementById('extractSource');
+const extractTranslatedBtn = document.getElementById('extractTranslated');
 const closeBtn = document.getElementById('close');
-const CLOSE_BUTTON_OFFSET = 6;
+const ACTION_BUTTON_WIDTH = 82;
+const CONTROL_PADDING = 4;
+const CONTROL_GAP = 4;
+
+const DEFAULT_BUTTON_LABELS = {
+  source: {
+    eyebrow: 'OCR',
+    label: '原文',
+    title: '复制原文',
+    icon: {
+      name: 'file',
+      variant: 'solid'
+    }
+  },
+  translated: {
+    eyebrow: 'TR',
+    label: '译文',
+    title: '复制译文',
+    icon: {
+      name: 'copy',
+      variant: 'regular'
+    }
+  }
+};
+
+const BUTTON_FEEDBACK_LABELS = {
+  success: {
+    eyebrow: 'OK',
+    label: '已复制',
+    icon: {
+      name: 'check',
+      variant: 'solid'
+    },
+    state: 'success'
+  },
+  error: {
+    eyebrow: 'ERR',
+    label: '复制失败',
+    icon: {
+      name: 'circle-xmark',
+      variant: 'regular'
+    },
+    state: 'error'
+  }
+};
+
 let ignoreMouseEvents = true;
+let extractionState = {
+  sourceText: '',
+  translatedText: ''
+};
 
 function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -110,19 +162,115 @@ function applySelectionViewport(payload) {
   applyViewportRect(root, rect);
 }
 
-function applyControlViewport(payload) {
-  if (!closeBtn) {
+function resetActionButton(button, kind) {
+  if (!button) {
     return;
   }
+  clearTimeout(button._feedbackTimer);
+  applyActionButtonCopy(button, DEFAULT_BUTTON_LABELS[kind], 'idle');
+}
+
+function applyActionButtonCopy(button, content, state) {
+  if (!button || !content) {
+    return;
+  }
+
+  const eyebrowEl = button.querySelector('[data-role="eyebrow"]');
+  const labelEl = button.querySelector('[data-role="label"]');
+  const iconEl = button.querySelector('wa-icon');
+
+  if (eyebrowEl) {
+    eyebrowEl.textContent = content.eyebrow;
+  }
+
+  if (labelEl) {
+    labelEl.textContent = content.label;
+  }
+
+  if (iconEl && content.icon) {
+    iconEl.setAttribute('name', content.icon.name);
+    iconEl.setAttribute('variant', content.icon.variant || 'solid');
+    iconEl.setAttribute('library', content.icon.library || 'system');
+  }
+
+  if (content.title) {
+    button.title = content.title;
+    button.setAttribute('aria-label', content.title);
+  }
+
+  button.dataset.state = state;
+}
+
+function setActionButtonVisible(button, kind, visible) {
+  if (!button) {
+    return;
+  }
+  button.hidden = !visible;
+  button.disabled = !visible;
+  if (visible) {
+    resetActionButton(button, kind);
+  }
+}
+
+function applyExtractionState(payload) {
+  extractionState = {
+    sourceText: String(payload?.extraction?.sourceText || ''),
+    translatedText: String(payload?.extraction?.translatedText || '')
+  };
+
+  setActionButtonVisible(extractSourceBtn, 'source', Boolean(extractionState.sourceText));
+  setActionButtonVisible(extractTranslatedBtn, 'translated', Boolean(extractionState.translatedText));
+}
+
+function getVisibleControlButtons() {
+  return [extractSourceBtn, extractTranslatedBtn, closeBtn].filter((button) => button && !button.hidden);
+}
+
+function getControlButtonWidth(button) {
+  if (!button) {
+    return 0;
+  }
+
+  // Keep the first-paint toolbar size stable before styles/fonts fully settle.
+  const measuredWidth = Math.ceil(button.getBoundingClientRect().width || button.offsetWidth || 0);
+  const fallbackWidth = ACTION_BUTTON_WIDTH;
+  return Math.max(measuredWidth, fallbackWidth);
+}
+
+function measureControlsWidth() {
+  if (!controlsEl) {
+    return 0;
+  }
+
+  const styles = getComputedStyle(controlsEl);
+  const gap = parseFloat(styles.gap || styles.columnGap || '0') || CONTROL_GAP;
+  const paddingLeft = parseFloat(styles.paddingLeft || '0') || CONTROL_PADDING;
+  const paddingRight = parseFloat(styles.paddingRight || '0') || CONTROL_PADDING;
+  const buttons = getVisibleControlButtons();
+  const buttonWidth = buttons.reduce((sum, button) => sum + getControlButtonWidth(button), 0);
+
+  return Math.ceil(paddingLeft + paddingRight + buttonWidth + gap * Math.max(0, buttons.length - 1));
+}
+
+function applyControlViewport(payload) {
+  if (!controlsEl) {
+    return;
+  }
+
   const rect = payload?.controlRect;
   if (!rect) {
-    closeBtn.style.display = 'none';
+    controlsEl.style.display = 'none';
     return;
   }
+
   const controlRect = normalizeViewportRect(rect);
-  closeBtn.style.display = 'block';
-  closeBtn.style.left = `${controlRect.x + CLOSE_BUTTON_OFFSET}px`;
-  closeBtn.style.top = `${controlRect.y + CLOSE_BUTTON_OFFSET}px`;
+  controlsEl.style.display = 'flex';
+  controlsEl.style.height = `${controlRect.height}px`;
+
+  const width = measureControlsWidth();
+  controlsEl.style.width = `${width}px`;
+  controlsEl.style.left = `${controlRect.x + controlRect.width - width}px`;
+  controlsEl.style.top = `${controlRect.y}px`;
 }
 
 function applySnapshot(payload) {
@@ -195,6 +343,7 @@ function renderBlocks(payload) {
   root.innerHTML = '';
   applySelectionViewport(payload);
   applySnapshot(payload);
+  applyExtractionState(payload);
   applyControlViewport(payload);
   void syncIgnoreMouseEvents(true);
 
@@ -278,6 +427,35 @@ function reportOverlayMetrics(payload) {
   });
 }
 
+function flashActionFeedback(button, kind, status) {
+  if (!button) {
+    return;
+  }
+  clearTimeout(button._feedbackTimer);
+  applyActionButtonCopy(button, BUTTON_FEEDBACK_LABELS[status], BUTTON_FEEDBACK_LABELS[status].state);
+  button._feedbackTimer = window.setTimeout(() => {
+    if (!button.hidden) {
+      resetActionButton(button, kind);
+    }
+  }, 1200);
+}
+
+async function copyExtractionText(kind) {
+  const text = kind === 'source' ? extractionState.sourceText : extractionState.translatedText;
+  const button = kind === 'source' ? extractSourceBtn : extractTranslatedBtn;
+
+  if (!text || !button || !window.snapTranslate?.writeClipboardText) {
+    return;
+  }
+
+  try {
+    const copied = await window.snapTranslate.writeClipboardText(text);
+    flashActionFeedback(button, kind, copied ? 'success' : 'error');
+  } catch {
+    flashActionFeedback(button, kind, 'error');
+  }
+}
+
 window.snapTranslate.onOverlayRender((payload) => {
   renderBlocks(payload);
 });
@@ -286,12 +464,20 @@ closeBtn.addEventListener('click', async () => {
   await window.snapTranslate.closeOverlay();
 });
 
+extractSourceBtn.addEventListener('click', async () => {
+  await copyExtractionText('source');
+});
+
+extractTranslatedBtn.addEventListener('click', async () => {
+  await copyExtractionText('translated');
+});
+
 window.addEventListener('mousemove', (event) => {
-  if (!closeBtn || closeBtn.style.display === 'none') {
+  if (!controlsEl || controlsEl.style.display === 'none') {
     void syncIgnoreMouseEvents(true);
     return;
   }
-  const bounds = closeBtn.getBoundingClientRect();
+  const bounds = controlsEl.getBoundingClientRect();
   const hovering = isPointInsideBounds(event.clientX, event.clientY, bounds);
   void syncIgnoreMouseEvents(!hovering);
 });

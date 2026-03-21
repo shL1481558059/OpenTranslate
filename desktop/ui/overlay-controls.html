@@ -4,10 +4,19 @@
     <meta charset="UTF-8" />
     <title>Overlay Controls</title>
     <script src="./theme-bootstrap.js?v=1"></script>
+    <script type="module" src="./overlay-icons.js"></script>
     <link rel="stylesheet" href="./overlay-controls.css" />
   </head>
   <body>
-    <button id="close" title="Close">x</button>
+    <button id="close" class="action-btn close-btn" type="button" title="关闭" aria-label="关闭">
+      <span class="close-btn__icon" aria-hidden="true">
+        <wa-icon name="xmark" library="system"></wa-icon>
+      </span>
+      <span class="action-btn__text">
+        <span class="action-btn__eyebrow">ESC</span>
+        <span class="action-btn__label">关闭</span>
+      </span>
+    </button>
     <script src="./overlay-controls.js"></script>
   </body>
 </html>

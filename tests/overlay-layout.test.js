@@ -11,10 +11,10 @@ test('buildOverlayLayout prefers top-right gutter when there is space', () => {
 
   assert.equal(layout.controlSide, 'top');
   assert.deepEqual(layout.overlayBounds, { x: 100, y: 100, width: 120, height: 60 });
-  assert.deepEqual(layout.controlBounds, { x: 184, y: 64, width: 36, height: 36 });
+  assert.deepEqual(layout.controlBounds, { x: 0, y: 64, width: 262, height: 36 });
 });
 
-test('buildOverlayLayout moves close button below the region near top-right edges', () => {
+test('buildOverlayLayout moves the control bar below the region near top-right edges', () => {
   const layout = buildOverlayLayout(
     { x: 1360, y: 4, width: 70, height: 40 },
     { x: 0, y: 0, width: 1440, height: 900 }
@@ -22,5 +22,5 @@ test('buildOverlayLayout moves close button below the region near top-right edge
 
   assert.equal(layout.controlSide, 'bottom');
   assert.deepEqual(layout.overlayBounds, { x: 1360, y: 4, width: 70, height: 40 });
-  assert.deepEqual(layout.controlBounds, { x: 1394, y: 44, width: 36, height: 36 });
+  assert.deepEqual(layout.controlBounds, { x: 1168, y: 44, width: 262, height: 36 });
 });

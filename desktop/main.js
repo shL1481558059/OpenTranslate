@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeImage, Menu, Tray, dialog } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, nativeImage, Menu, Tray, dialog, clipboard } = require('electron');
 
 const APP_NAME = 'OpenTranslate';
 app.setName(APP_NAME);
@@ -14,6 +14,7 @@ app.name = APP_NAME;
 const { captureRect, captureScreen, cleanupImage } = require('./lib/capture');
 const ocrProvider = require('./lib/ocr-provider');
 const translationProvider = require('./lib/translation-provider');
+const { buildExtractedText } = require('./lib/extraction-text');
 const layoutEngine = require('./lib/layout-engine');
 const { normalizeRect, rectRelativeToBounds } = require('./lib/geometry');
 const { normalizeHotkey, hasModifierHotkey } = require('./lib/hotkey-rules');
@@ -1331,6 +1332,10 @@ async function runPipeline(rect) {
     await renderOverlayPayload(absoluteRect, {
       rect: absoluteRect,
       blocks: renderBlocks,
+      extraction: {
+        sourceText: buildExtractedText(scaledBlocks),
+        translatedText: buildExtractedText(renderBlocks)
+      },
       ...(usesCompactMaskReplace
         ? buildTextOnlyOverlayOptions({ maskOpacity: 0.35 }, scaledBlocks.length > 0)
         : buildResultOverlayOptions(
@@ -1494,6 +1499,16 @@ async function handleTranslateText(_, payload) {
   }
 }
 
+function handleClipboardWriteText(_, text) {
+  const value = String(text || '').trim();
+  if (!value) {
+    return false;
+  }
+
+  clipboard.writeText(value);
+  return true;
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('selection:cancel', closeSelectionWindow);
   ipcMain.on('selection:cursor-point-sync', (event) => {
@@ -1516,6 +1531,7 @@ function registerIpcHandlers() {
   ipcMain.handle('settings:set', handleSettingsSet);
   ipcMain.handle('hotkey:update', async (_, hotkey) => updateHotkey(hotkey));
   ipcMain.handle('translate:text', handleTranslateText);
+  ipcMain.handle('clipboard:write-text', handleClipboardWriteText);
 }
 
 app.whenReady().then(async () => {
