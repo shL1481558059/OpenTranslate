@@ -12,25 +12,14 @@ body {
   color-scheme: light dark;
 }
 
-#mask {
-  position: absolute;
-  background: rgba(0, 0, 0, 0.35);
-  transition: background 120ms ease;
-}
-
-#snapshot {
-  position: absolute;
-  display: none;
-  object-fit: fill;
-  pointer-events: none;
-}
-
-#root {
-  position: absolute;
+body {
+  position: relative;
 }
 
 #close {
   position: absolute;
+  top: 6px;
+  left: 6px;
   border: none;
   width: 24px;
   height: 24px;
@@ -39,18 +28,6 @@ body {
   color: #0f172a;
   cursor: pointer;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
-}
-
-.block {
-  position: absolute;
-  box-sizing: border-box;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  hyphens: auto;
-  border: none;
-  border-radius: 0;
-  backdrop-filter: none;
 }
 
 :root[data-theme='dark'] #close {

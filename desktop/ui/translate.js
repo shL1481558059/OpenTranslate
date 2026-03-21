@@ -1,3 +1,4 @@
+import './theme.js';
 import './webawesome.js';
 import { initPageTransition, navigateWithTransition } from './page-transition.js';
 
@@ -9,6 +10,25 @@ const copyBtn = document.getElementById('copyBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const sourceLangEl = document.getElementById('sourceLang');
 const targetLangEl = document.getElementById('targetLang');
+const STATUS_VARIANTS = {
+  error: 'danger',
+  success: 'success'
+};
+
+function getStatusVariant(type) {
+  return STATUS_VARIANTS[type] || 'neutral';
+}
+
+function getErrorMessage(error) {
+  return error?.message || error;
+}
+
+function getSelectedLanguages() {
+  return {
+    sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
+    targetLang: normalizeLang(targetLangEl.value, 'zh-CN')
+  };
+}
 
 function setStatus(message, type) {
   if (!message) {
@@ -20,7 +40,7 @@ function setStatus(message, type) {
 
   statusEl.hidden = false;
   statusEl.textContent = message;
-  statusEl.variant = type === 'error' ? 'danger' : type === 'success' ? 'success' : 'neutral';
+  statusEl.variant = getStatusVariant(type);
 }
 
 function normalizeLang(value, fallback) {
@@ -43,15 +63,10 @@ async function saveLangSettings() {
     return;
   }
 
-  const payload = {
-    sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
-    targetLang: normalizeLang(targetLangEl.value, 'zh-CN')
-  };
-
   try {
-    await window.snapTranslate.setSettings(payload);
+    await window.snapTranslate.setSettings(getSelectedLanguages());
   } catch (error) {
-    setStatus(`保存语言设置失败：${error.message || error}`, 'error');
+    setStatus(`保存语言设置失败：${getErrorMessage(error)}`, 'error');
   }
 }
 
@@ -70,10 +85,7 @@ async function doTranslate() {
   setStatus('翻译中…');
 
   try {
-    const result = await window.snapTranslate.translateText(text, {
-      sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
-      targetLang: normalizeLang(targetLangEl.value, 'zh-CN')
-    });
+    const result = await window.snapTranslate.translateText(text, getSelectedLanguages());
 
     if (!result.ok) {
       setStatus(`翻译失败：${result.error || '未知错误'}`, 'error');
@@ -85,7 +97,7 @@ async function doTranslate() {
     copyBtn.disabled = !result.text;
     setStatus('翻译完成。', 'success');
   } catch (error) {
-    setStatus(`翻译失败：${error.message || error}`, 'error');
+    setStatus(`翻译失败：${getErrorMessage(error)}`, 'error');
     outputEl.value = '';
   } finally {
     translateBtn.loading = false;
@@ -117,7 +129,7 @@ settingsBtn.addEventListener('click', async () => {
   try {
     await navigateWithTransition((options) => window.snapTranslate.openSettings(options), 'forward');
   } catch (error) {
-    setStatus(`打开设置失败：${error.message || error}`, 'error');
+    setStatus(`打开设置失败：${getErrorMessage(error)}`, 'error');
   }
 });
 

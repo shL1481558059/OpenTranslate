@@ -1,0 +1,37 @@
+{
+  "runtimeSettings": {
+    "engine": "api",
+    "theme": "system",
+    "sourceLang": "auto",
+    "targetLang": "zh-CN",
+    "translationApiUrl": "http://127.0.0.1:8788/v1/translate",
+    "hotkey": "Control+Q",
+    "launchAtLoginAvailable": false,
+    "launchAtLoginStatus": "unavailable_in_dev"
+  },
+  "translateStatus": "翻译完成。",
+  "translatedOutput": "哈罗世界哈罗世界",
+  "copyDisabled": false,
+  "settingsPageSnapshot": {
+    "engine": "api",
+    "theme": "system",
+    "sourceLang": "auto",
+    "targetLang": "zh-CN",
+    "translationApiUrl": "http://127.0.0.1:8788/v1/translate",
+    "hotkey": "Control+Q"
+  },
+  "returnedTargetLang": "zh-CN",
+  "windowCount": 1,
+  "pageErrors": [],
+  "consoleErrors": [],
+  "consoleWarnings": [
+    "%cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security\n  Policy set or a policy with \"unsafe-eval\" enabled. This exposes users of\n  this app to unnecessary security risks.\n\nFor more information and help, consult\nhttps://electronjs.org/docs/tutorial/security.\nThis warning will not show up\nonce the app is packaged.",
+    "%cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security\n  Policy set or a policy with \"unsafe-eval\" enabled. This exposes users of\n  this app to unnecessary security risks.\n\nFor more information and help, consult\nhttps://electronjs.org/docs/tutorial/security.\nThis warning will not show up\nonce the app is packaged.",
+    "%cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security\n  Policy set or a policy with \"unsafe-eval\" enabled. This exposes users of\n  this app to unnecessary security risks.\n\nFor more information and help, consult\nhttps://electronjs.org/docs/tutorial/security.\nThis warning will not show up\nonce the app is packaged."
+  ],
+  "screenshots": [
+    "/Users/w/shL/Work/shL/OpenTranslate/output/playwright/electron-smoke-translate-initial.png",
+    "/Users/w/shL/Work/shL/OpenTranslate/output/playwright/electron-smoke-settings.png",
+    "/Users/w/shL/Work/shL/OpenTranslate/output/playwright/electron-smoke-translate-final.png"
+  ]
+}

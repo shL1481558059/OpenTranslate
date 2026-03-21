@@ -1,0 +1,71 @@
+{
+  "rect": {
+    "x": 534,
+    "y": 168,
+    "width": 360,
+    "height": 120
+  },
+  "overlaySnapshot": {
+    "text": "巴文本粘贴进来直接翻译，输入和结果并排放，操作尽量一步到\nx",
+    "blockTexts": [
+      "巴文本粘贴进来直接翻译，输入和结果并排放，操作尽量一步到"
+    ],
+    "blockCount": 1,
+    "maskDisplay": "block",
+    "closeDisplay": "block",
+    "rootRect": {
+      "x": 534,
+      "y": 143,
+      "width": 360,
+      "height": 120
+    }
+  },
+  "beforeClose": [
+    {
+      "title": "Overlay",
+      "visible": true,
+      "bounds": {
+        "x": 0,
+        "y": 25,
+        "width": 1920,
+        "height": 1080
+      }
+    },
+    {
+      "title": "Manual Translate",
+      "visible": true,
+      "bounds": {
+        "x": 510,
+        "y": 144,
+        "width": 900,
+        "height": 680
+      }
+    }
+  ],
+  "afterClose": [
+    {
+      "title": "Overlay",
+      "visible": false,
+      "bounds": {
+        "x": 0,
+        "y": 25,
+        "width": 1920,
+        "height": 1080
+      }
+    },
+    {
+      "title": "Manual Translate",
+      "visible": true,
+      "bounds": {
+        "x": 510,
+        "y": 144,
+        "width": 900,
+        "height": 680
+      }
+    }
+  ],
+  "translateErrors": [],
+  "overlayErrors": [],
+  "overlayWarnings": [],
+  "screenshot": "/Users/w/shL/Work/shL/OpenTranslate/output/playwright/electron-smoke-overlay.png"
+}

@@ -15,31 +15,50 @@ const { captureRect, captureScreen, cleanupImage } = require('./lib/capture');
 const ocrProvider = require('./lib/ocr-provider');
 const translationProvider = require('./lib/translation-provider');
 const layoutEngine = require('./lib/layout-engine');
+const { normalizeRect, rectRelativeToBounds } = require('./lib/geometry');
 const { normalizeHotkey, hasModifierHotkey } = require('./lib/hotkey-rules');
+const { buildOverlayLayout } = require('./lib/overlay-layout');
 
 const CAPTURE_DELAY_MS = Number(process.env.SNAP_TRANSLATE_CAPTURE_DELAY_MS || 280);
 const DEFAULT_API_URL = process.env.TRANSLATION_API_URL || 'http://127.0.0.1:8787/v1/translate';
 const LOGIN_ITEM_SUPPORTED_PLATFORMS = new Set(['darwin', 'win32']);
+const THEME_PREFERENCES = new Set(['system', 'light', 'dark']);
 const execFileAsync = promisify(execFile);
+const PRELOAD_PATH = path.join(__dirname, 'preload.js');
+const UI_DIR = path.join(__dirname, 'ui');
+const SCRIPTS_DIR = path.join(__dirname, 'scripts');
 
 let selectionWindow = null;
 let overlayWindow = null;
+let overlayControlsWindow = null;
 let lastSelectionDisplayId = null;
 let overlayReadyPromise = null;
+let overlaySessionHostBounds = null;
+let overlaySessionViewportBounds = null;
 let translateWindow = null;
 let settings = null;
 const appIconPath = path.join(__dirname, 'assets', 'app-icon-apple.png');
 const trayIconPath = path.join(__dirname, 'assets', 'tray-template-18.png');
 const trayIconPath2x = path.join(__dirname, 'assets', 'tray-template-36.png');
 let tray = null;
+const SELECTION_CANCEL_ACCELERATOR = 'Escape';
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function getErrorMessage(error) {
+  return error?.message || error;
+}
+
 function normalizeLang(value, fallback) {
   const trimmed = String(value || '').trim();
   return trimmed || fallback;
+}
+
+function normalizeThemePreference(value, fallback = 'system') {
+  const trimmed = String(value || '').trim().toLowerCase();
+  return THEME_PREFERENCES.has(trimmed) ? trimmed : fallback;
 }
 
 function applyApiDefaults(next) {
@@ -58,6 +77,7 @@ function getDefaultSettings() {
   const normalizedEngine = envEngine === 'llm' ? 'llm' : 'api';
   return applyApiDefaults({
     engine: normalizedEngine,
+    theme: normalizeThemePreference(process.env.SNAP_TRANSLATE_THEME || '', 'system'),
     sourceLang: normalizeLang(process.env.SOURCE_LANG || '', 'auto'),
     targetLang: normalizeLang(process.env.TARGET_LANG || '', 'zh-CN'),
     llmApiUrl: process.env.LLM_API_URL || 'https://api.openai.com/v1',
@@ -71,6 +91,22 @@ function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
+function getUiPath(fileName) {
+  return path.join(UI_DIR, fileName);
+}
+
+function getScriptPath(fileName) {
+  return path.join(SCRIPTS_DIR, fileName);
+}
+
+function buildRendererWebPreferences() {
+  return {
+    preload: PRELOAD_PATH,
+    contextIsolation: true,
+    nodeIntegration: false
+  };
+}
+
 function sanitizeSettings(input) {
   const next = {};
   if (!input || typeof input !== 'object') {
@@ -81,6 +117,9 @@ function sanitizeSettings(input) {
     if (engine === 'llm' || engine === 'api') {
       next.engine = engine;
     }
+  }
+  if (typeof input.theme === 'string') {
+    next.theme = normalizeThemePreference(input.theme);
   }
   if (typeof input.translationApiUrl === 'string') {
     next.translationApiUrl = input.translationApiUrl;
@@ -135,45 +174,43 @@ function requiresApplicationsInstallForLaunchAtLogin() {
   return process.platform === 'darwin' && app.isPackaged && !app.isInApplicationsFolder();
 }
 
-function getLaunchAtLoginState() {
+function buildLaunchAtLoginState(launchAtLogin, launchAtLoginAvailable, launchAtLoginStatus) {
+  return {
+    launchAtLogin: Boolean(launchAtLogin),
+    launchAtLoginAvailable: Boolean(launchAtLoginAvailable),
+    launchAtLoginStatus
+  };
+}
+
+function getLaunchAtLoginAccessError() {
   if (!supportsLaunchAtLogin()) {
-    return {
-      launchAtLogin: false,
-      launchAtLoginAvailable: false,
-      launchAtLoginStatus: 'unsupported'
-    };
+    return 'launch_at_login_unsupported';
   }
-
-  if (!app.isPackaged) {
-    return {
-      launchAtLogin: false,
-      launchAtLoginAvailable: false,
-      launchAtLoginStatus: 'unavailable_in_dev'
-    };
+  if (!canManageLaunchAtLogin()) {
+    return 'launch_at_login_unavailable_in_dev';
   }
-
   if (requiresApplicationsInstallForLaunchAtLogin()) {
-    return {
-      launchAtLogin: false,
-      launchAtLoginAvailable: false,
-      launchAtLoginStatus: 'requires_applications_folder'
-    };
+    return 'launch_at_login_requires_applications_folder';
+  }
+  return null;
+}
+
+function getLaunchAtLoginState() {
+  const accessError = getLaunchAtLoginAccessError();
+  if (accessError) {
+    return buildLaunchAtLoginState(false, false, accessError.replace('launch_at_login_', ''));
   }
 
   try {
     const loginItem = app.getLoginItemSettings();
-    return {
-      launchAtLogin: Boolean(loginItem.openAtLogin),
-      launchAtLoginAvailable: true,
-      launchAtLoginStatus: typeof loginItem.status === 'string' ? loginItem.status : 'enabled'
-    };
+    return buildLaunchAtLoginState(
+      loginItem.openAtLogin,
+      true,
+      typeof loginItem.status === 'string' ? loginItem.status : 'enabled'
+    );
   } catch (error) {
-    console.warn('[desktop] failed to read login item settings', error?.message || error);
-    return {
-      launchAtLogin: false,
-      launchAtLoginAvailable: false,
-      launchAtLoginStatus: 'error'
-    };
+    console.warn('[desktop] failed to read login item settings', getErrorMessage(error));
+    return buildLaunchAtLoginState(false, false, 'error');
   }
 }
 
@@ -185,16 +222,9 @@ function buildRendererSettings() {
 }
 
 function updateLaunchAtLogin(openAtLogin) {
-  if (!supportsLaunchAtLogin()) {
-    return { ok: false, error: 'launch_at_login_unsupported' };
-  }
-
-  if (!canManageLaunchAtLogin()) {
-    return { ok: false, error: 'launch_at_login_unavailable_in_dev' };
-  }
-
-  if (requiresApplicationsInstallForLaunchAtLogin()) {
-    return { ok: false, error: 'launch_at_login_requires_applications_folder' };
+  const accessError = getLaunchAtLoginAccessError();
+  if (accessError) {
+    return { ok: false, error: accessError };
   }
 
   try {
@@ -213,16 +243,9 @@ function updateLaunchAtLogin(openAtLogin) {
 }
 
 function repairLaunchAtLogin(openAtLogin = false) {
-  if (!supportsLaunchAtLogin()) {
-    return { ok: false, error: 'launch_at_login_unsupported' };
-  }
-
-  if (!canManageLaunchAtLogin()) {
-    return { ok: false, error: 'launch_at_login_unavailable_in_dev' };
-  }
-
-  if (requiresApplicationsInstallForLaunchAtLogin()) {
-    return { ok: false, error: 'launch_at_login_requires_applications_folder' };
+  const accessError = getLaunchAtLoginAccessError();
+  if (accessError) {
+    return { ok: false, error: accessError };
   }
 
   try {
@@ -294,6 +317,20 @@ function registerHotkey(hotkey) {
     createSelectionWindow();
   });
   return ok;
+}
+
+function registerSelectionCancelShortcut() {
+  globalShortcut.unregister(SELECTION_CANCEL_ACCELERATOR);
+  return globalShortcut.register(SELECTION_CANCEL_ACCELERATOR, () => {
+    if (!selectionWindow) {
+      return;
+    }
+    closeSelectionWindow();
+  });
+}
+
+function unregisterSelectionCancelShortcut() {
+  globalShortcut.unregister(SELECTION_CANCEL_ACCELERATOR);
 }
 
 function updateHotkey(nextHotkey) {
@@ -373,6 +410,48 @@ function averageColorFromBitmap(bitmap, imageWidth, imageHeight, rect, grid = 8)
 function colorToCss(color) {
   if (!color) return null;
   return `rgb(${color.r}, ${color.g}, ${color.b})`;
+}
+
+function imagePathToDataUrl(imagePath) {
+  if (!imagePath) {
+    return null;
+  }
+  try {
+    const buffer = fs.readFileSync(imagePath);
+    return `data:image/png;base64,${buffer.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+function getImageScale(imageSize, targetSize, fallback = 1) {
+  if (imageSize > 0) {
+    return imageSize / Math.max(targetSize, 1);
+  }
+  return fallback;
+}
+
+function createImageRectMapper(scaleX, scaleY) {
+  return function mapRectToImage(bbox) {
+    return {
+      x: Math.round(bbox.x * scaleX),
+      y: Math.round(bbox.y * scaleY),
+      width: Math.round(bbox.width * scaleX),
+      height: Math.round(bbox.height * scaleY)
+    };
+  };
+}
+
+function scaleOcrBlocks(blocks, scaleX, scaleY) {
+  return blocks.map((block) => ({
+    ...block,
+    bbox: {
+      x: Math.round(block.bbox.x / scaleX),
+      y: Math.round(block.bbox.y / scaleY),
+      width: Math.round(block.bbox.width / scaleX),
+      height: Math.round(block.bbox.height / scaleY)
+    }
+  }));
 }
 
 function textColorForBackground(color) {
@@ -464,54 +543,99 @@ function configureOverlayWindow(win) {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 }
 
+function hideOverlayWindows() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.hide();
+  }
+  if (overlayControlsWindow && !overlayControlsWindow.isDestroyed()) {
+    overlayControlsWindow.hide();
+  }
+  overlaySessionHostBounds = null;
+  overlaySessionViewportBounds = null;
+}
+
 function configureSelectionWindow(win) {
   configureOverlayWindow(win);
   win.setFullScreenable(true);
   win.setSimpleFullScreen(true);
 }
 
-function resolveWindowListScriptPath() {
-  const local = path.join(__dirname, 'scripts', 'window_list.swift');
+function getWindowViewportBounds(win) {
+  if (!win || win.isDestroyed()) {
+    return null;
+  }
+  if (typeof win.getContentBounds === 'function') {
+    return normalizeRect(win.getContentBounds());
+  }
+  return normalizeRect(win.getBounds());
+}
+
+function getWindowHostBounds(win) {
+  if (!win || win.isDestroyed()) {
+    return null;
+  }
+  return normalizeRect(win.getBounds());
+}
+
+function rectsEqual(left, right) {
+  return (
+    left?.x === right?.x &&
+    left?.y === right?.y &&
+    left?.width === right?.width &&
+    left?.height === right?.height
+  );
+}
+
+async function settleWindowViewportBounds(win, attempts = 4, intervalMs = 24) {
+  let previous = null;
+  for (let index = 0; index < attempts; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const current = getWindowViewportBounds(win);
+    if (current && previous && rectsEqual(current, previous)) {
+      return current;
+    }
+    previous = current;
+  }
+  return previous || getWindowViewportBounds(win);
+}
+
+function resolveSelectionWindowBounds(display) {
+  if (
+    selectionWindow &&
+    !selectionWindow.isDestroyed() &&
+    display &&
+    lastSelectionDisplayId === display.id
+  ) {
+    return getWindowHostBounds(selectionWindow);
+  }
+  return normalizeRect(display?.bounds || screen.getPrimaryDisplay().bounds);
+}
+
+function resolveDesktopScriptPath(fileName) {
+  const local = getScriptPath(fileName);
   if (!app || !app.isPackaged) {
     return local;
   }
-  const unpacked = path.join(
-    process.resourcesPath,
-    'app.asar.unpacked',
-    'desktop',
-    'scripts',
-    'window_list.swift'
-  );
+
+  const unpacked = path.join(process.resourcesPath, 'app.asar.unpacked', 'desktop', 'scripts', fileName);
   if (fs.existsSync(unpacked)) {
     return unpacked;
   }
-  const resources = path.join(process.resourcesPath, 'desktop', 'scripts', 'window_list.swift');
+
+  const resources = path.join(process.resourcesPath, 'desktop', 'scripts', fileName);
   if (fs.existsSync(resources)) {
     return resources;
   }
+
   return local;
 }
 
+function resolveWindowListScriptPath() {
+  return resolveDesktopScriptPath('window_list.swift');
+}
+
 function resolveVisionRectsScriptPath() {
-  const local = path.join(__dirname, 'scripts', 'vision_rects.swift');
-  if (!app || !app.isPackaged) {
-    return local;
-  }
-  const unpacked = path.join(
-    process.resourcesPath,
-    'app.asar.unpacked',
-    'desktop',
-    'scripts',
-    'vision_rects.swift'
-  );
-  if (fs.existsSync(unpacked)) {
-    return unpacked;
-  }
-  const resources = path.join(process.resourcesPath, 'desktop', 'scripts', 'vision_rects.swift');
-  if (fs.existsSync(resources)) {
-    return resources;
-  }
-  return local;
+  return resolveDesktopScriptPath('vision_rects.swift');
 }
 
 function rectIntersects(a, b) {
@@ -549,7 +673,7 @@ async function listWindowBounds(display) {
     }
     return { windows, requiresAccessibility, requiresScreenRecording };
   } catch (error) {
-    console.warn('[desktop] window list unavailable', error?.message || error);
+    console.warn('[desktop] window list unavailable', getErrorMessage(error));
     return { windows: [], requiresAccessibility: false, requiresScreenRecording: false };
   }
 }
@@ -590,7 +714,7 @@ async function detectWindowRects(display) {
       })
       .filter((rect) => rect.width > 120 && rect.height > 80);
   } catch (error) {
-    console.warn('[desktop] vision window detect failed', error?.message || error);
+    console.warn('[desktop] vision window detect failed', getErrorMessage(error));
     return [];
   } finally {
     if (capture?.imagePath) {
@@ -613,39 +737,89 @@ async function getSnapWindows(display) {
 }
 
 async function renderOverlayMessage(rect, message, styleHint = {}, options = {}) {
-  const win = await ensureOverlayWindowReady();
-  win.setBounds({
-    x: rect.x,
-    y: rect.y,
-    width: rect.width,
-    height: rect.height
-  });
-  win.showInactive();
   const baseSize = Math.max(12, Math.min(28, Math.floor(Math.min(rect.width, rect.height) * 0.06)));
-  win.webContents.send('overlay:render', {
+  const block = buildOverlayRectBlock('status', rect, message, {
+    fontSize: baseSize,
+    lineHeight: 1.3,
+    padding: Math.max(8, Math.floor(baseSize * 0.6)),
+    background: 'transparent',
+    color: '#ffffff',
+    textShadow: '0 1px 2px rgba(0,0,0,0.6)',
+    layout: 'center',
+    ...styleHint
+  });
+  await renderOverlayPayload(rect, {
     rect,
-    blocks: [
-      {
-        id: 'status',
-        bbox: { x: 0, y: 0, width: rect.width, height: rect.height },
-        text: message,
-        styleHint: {
-          fontSize: baseSize,
-          lineHeight: 1.3,
-          padding: Math.max(8, Math.floor(baseSize * 0.6)),
-          background: 'transparent',
-          color: '#ffffff',
-          textShadow: '0 1px 2px rgba(0,0,0,0.6)',
-          layout: 'center',
-          ...styleHint
-        }
-      }
-    ],
-    hasText: false,
+    blocks: [block],
+    ...buildTextOnlyOverlayOptions({ maskOpacity: options.maskOpacity }, false)
+  });
+}
+
+function buildOverlayRectBlock(id, rect, text, styleHint) {
+  return {
+    id,
+    bbox: { x: 0, y: 0, width: rect.width, height: rect.height },
+    text,
+    styleHint
+  };
+}
+
+function buildTextOnlyOverlayOptions(options = {}, hasText = false) {
+  return {
+    hasText,
     mask: true,
     textOnly: true,
     maskOpacity: typeof options.maskOpacity === 'number' ? options.maskOpacity : 0.35
+  };
+}
+
+function buildResultOverlayOptions(snapshotDataUrl, sampledMaskColor, usesCompactMaskReplace, hasText) {
+  return {
+    hasText,
+    snapshotDataUrl,
+    mask: true,
+    textOnly: true,
+    maskOpacity: snapshotDataUrl ? (usesCompactMaskReplace ? 0.35 : 0.18) : 1,
+    maskColor: snapshotDataUrl ? undefined : sampledMaskColor ? colorToCss(sampledMaskColor) : undefined
+  };
+}
+
+function cleanupCapturedImages(paths, keepLast) {
+  if (keepLast) {
+    return Promise.resolve();
+  }
+
+  const uniquePaths = Array.from(new Set(paths.filter(Boolean)));
+  return Promise.all(uniquePaths.map((imagePath) => cleanupImage(imagePath)));
+}
+
+async function renderOverlayPayload(rect, payload) {
+  const display = screen.getDisplayNearestPoint({ x: rect.x, y: rect.y }) || screen.getPrimaryDisplay();
+  const win = await ensureOverlayWindowReady();
+  if (!overlaySessionHostBounds) {
+    overlaySessionHostBounds = resolveSelectionWindowBounds(display);
+  }
+  if (!overlaySessionViewportBounds) {
+    win.setBounds(overlaySessionHostBounds);
+    win.showInactive();
+    overlaySessionViewportBounds = await settleWindowViewportBounds(win);
+  } else if (!win.isVisible()) {
+    win.showInactive();
+  }
+  const overlayBounds = overlaySessionViewportBounds;
+  const layout = buildOverlayLayout(rect, overlayBounds);
+
+  win.webContents.send('overlay:render', {
+    ...payload,
+    rect,
+    overlayBounds,
+    selectionRect: rectRelativeToBounds(rect, overlayBounds),
+    controlRect: rectRelativeToBounds(layout.controlBounds, overlayBounds),
+    controlSide: layout.controlSide
   });
+  if (overlayControlsWindow && !overlayControlsWindow.isDestroyed()) {
+    overlayControlsWindow.hide();
+  }
 }
 
 function hideSelectionWindowForCapture() {
@@ -657,12 +831,21 @@ function hideSelectionWindowForCapture() {
   selectionWindow.hide();
 }
 
-function ensureOverlayWindow() {
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    return overlayWindow;
-  }
+function shouldKeepSelectionWindowForOverlay() {
+  return Boolean(selectionWindow && !selectionWindow.isDestroyed());
+}
 
-  overlayWindow = new BrowserWindow({
+function loadWindowFile(win, fileName, options) {
+  return win.loadFile(getUiPath(fileName), options);
+}
+
+function showLoadedWindow(win) {
+  win.show();
+  win.focus();
+}
+
+function buildOverlayBrowserWindowOptions(overrides = {}) {
+  return {
     show: false,
     frame: false,
     hasShadow: false,
@@ -672,20 +855,66 @@ function ensureOverlayWindow() {
     skipTaskbar: true,
     focusable: true,
     fullscreenable: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
+    webPreferences: buildRendererWebPreferences(),
+    ...overrides
+  };
+}
+
+function buildSelectionWindowOptions(display) {
+  return buildOverlayBrowserWindowOptions({
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    movable: false
   });
+}
+
+function buildTranslateWindowEffects() {
+  if (process.platform !== 'darwin') {
+    return {};
+  }
+  return {
+    vibrancy: 'under-window',
+    visualEffectState: 'active'
+  };
+}
+
+function ensureOverlayWindow() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    return overlayWindow;
+  }
+
+  overlayWindow = new BrowserWindow(buildOverlayBrowserWindowOptions());
 
   configureOverlayWindow(overlayWindow);
+  overlayWindow.setIgnoreMouseEvents(true, { forward: true });
   overlayWindow.on('closed', () => {
     overlayWindow = null;
     overlayReadyPromise = null;
+    overlaySessionHostBounds = null;
+    overlaySessionViewportBounds = null;
+    if (overlayControlsWindow && !overlayControlsWindow.isDestroyed()) {
+      overlayControlsWindow.close();
+    }
   });
-  overlayWindow.loadFile(path.join(__dirname, 'ui', 'overlay.html'));
+  loadWindowFile(overlayWindow, 'overlay.html');
   return overlayWindow;
+}
+
+function ensureOverlayControlsWindow() {
+  if (overlayControlsWindow && !overlayControlsWindow.isDestroyed()) {
+    return overlayControlsWindow;
+  }
+
+  overlayControlsWindow = new BrowserWindow(buildOverlayBrowserWindowOptions());
+
+  configureOverlayWindow(overlayControlsWindow);
+  overlayControlsWindow.on('closed', () => {
+    overlayControlsWindow = null;
+  });
+  loadWindowFile(overlayControlsWindow, 'overlay-controls.html');
+  return overlayControlsWindow;
 }
 
 async function ensureOverlayWindowReady() {
@@ -703,60 +932,87 @@ async function ensureOverlayWindowReady() {
   return win;
 }
 
+function isValidSelectionSize(rect) {
+  return rect.width > 6 && rect.height > 6;
+}
+
+function resolvePipelineTargetRect(rect) {
+  if (!rect) {
+    return null;
+  }
+  if (rect.click) {
+    if (rect.snapped !== 'window' || !isValidSelectionSize(rect)) {
+      return null;
+    }
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height
+    };
+  }
+  return isValidSelectionSize(rect) ? rect : null;
+}
+
 function createSelectionWindow() {
+  overlaySessionHostBounds = null;
+  overlaySessionViewportBounds = null;
   const cursorPoint = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(cursorPoint);
   lastSelectionDisplayId = display.id;
+  let selectionContext = {
+    windows: [],
+    requiresAccessibility: false,
+    requiresScreenRecording: false
+  };
+  let didFinishLoad = false;
 
-  selectionWindow = new BrowserWindow({
-    x: display.bounds.x,
-    y: display.bounds.y,
-    width: display.bounds.width,
-    height: display.bounds.height,
-    show: false,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    movable: false,
-    resizable: false,
-    focusable: true,
-    fullscreenable: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
+  const sendSelectionContext = () => {
+    if (
+      !didFinishLoad ||
+      !selectionWindow ||
+      selectionWindow.isDestroyed() ||
+      selectionWindow.webContents.isDestroyed()
+    ) {
+      return;
     }
-  });
+    selectionWindow.webContents.send('selection:windows', {
+      ...selectionContext,
+      displayBounds: getWindowViewportBounds(selectionWindow)
+    });
+  };
+
+  selectionWindow = new BrowserWindow(buildSelectionWindowOptions(display));
 
   configureSelectionWindow(selectionWindow);
-  selectionWindow.loadFile(path.join(__dirname, 'ui', 'selection.html'));
+  registerSelectionCancelShortcut();
+  loadWindowFile(selectionWindow, 'selection.html');
   selectionWindow.webContents.once('did-finish-load', async () => {
+    didFinishLoad = true;
     try {
-      const { windows, requiresAccessibility, requiresScreenRecording } = await getSnapWindows(display);
-      selectionWindow.webContents.send('selection:windows', {
-        windows,
-        displayBounds: display.bounds,
-        requiresAccessibility,
-        requiresScreenRecording
-      });
+      selectionContext = await getSnapWindows(display);
     } catch {
       // ignore
     }
+    sendSelectionContext();
   });
   selectionWindow.once('ready-to-show', () => {
     if (!selectionWindow || selectionWindow.isDestroyed()) {
       return;
     }
-    selectionWindow.show();
-    selectionWindow.focus();
+    selectionWindow.showInactive();
+    setTimeout(sendSelectionContext, 0);
   });
+  selectionWindow.on('move', sendSelectionContext);
+  selectionWindow.on('resize', sendSelectionContext);
   selectionWindow.on('closed', () => {
+    unregisterSelectionCancelShortcut();
     selectionWindow = null;
   });
 }
 
 function closeSelectionWindow() {
+  unregisterSelectionCancelShortcut();
   if (selectionWindow && !selectionWindow.isDestroyed()) {
     selectionWindow.close();
   }
@@ -779,23 +1035,14 @@ function ensureTranslateWindow() {
     titleBarStyle: 'hidden',
     transparent: true,
     backgroundColor: '#00000000',
-    ...(process.platform === 'darwin'
-      ? {
-          vibrancy: 'under-window',
-          visualEffectState: 'active'
-        }
-      : {}),
+    ...buildTranslateWindowEffects(),
     icon: appIconPath,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
+    webPreferences: buildRendererWebPreferences()
   });
   translateWindow.on('closed', () => {
     translateWindow = null;
   });
-  translateWindow.loadFile(path.join(__dirname, 'ui', 'translate.html'));
+  loadWindowFile(translateWindow, 'translate.html');
   return translateWindow;
 }
 
@@ -812,16 +1059,14 @@ function buildPageLoadOptions(options = {}) {
 
 function showTranslateWindow(options = {}) {
   const win = ensureTranslateWindow();
-  win.loadFile(path.join(__dirname, 'ui', 'translate.html'), buildPageLoadOptions(options));
-  win.show();
-  win.focus();
+  loadWindowFile(win, 'translate.html', buildPageLoadOptions(options));
+  showLoadedWindow(win);
 }
 
 function showSettingsWindow(options = {}) {
   const win = ensureTranslateWindow();
-  win.loadFile(path.join(__dirname, 'ui', 'settings.html'), buildPageLoadOptions(options));
-  win.show();
-  win.focus();
+  loadWindowFile(win, 'settings.html', buildPageLoadOptions(options));
+  showLoadedWindow(win);
 }
 
 function setupMenu() {
@@ -901,8 +1146,10 @@ async function runPipeline(rect) {
   };
 
   let imagePath;
+  let sourceImagePath = null;
+  let snapshotDataUrl = null;
   const keepLast = process.env.SNAP_TRANSLATE_KEEP_LAST === '1';
-  const useFullCapture = process.env.SNAP_TRANSLATE_FULL_CAPTURE === '1';
+  const allowFullCaptureFallback = process.env.SNAP_TRANSLATE_ALLOW_FULL_CAPTURE_FALLBACK === '1';
   let overlayShown = false;
   let mapRectToImage = null;
   const showProgress = async () => {
@@ -917,100 +1164,125 @@ async function runPipeline(rect) {
     let scaledBlocks = [];
     let imageWidth = 0;
     let imageHeight = 0;
+    const tryPreciseCapture = async () => {
+      const attempts = buildCaptureAttempts(absoluteRect, display);
+      for (const attempt of attempts) {
+        let matchedAttempt = false;
+        try {
+          imagePath = await captureRect(attempt.rect, attempt.scaleFactor);
+          await showProgress();
+          const ocrResult = await ocrProvider.recognize(imagePath);
+          const blocks = ocrResult.blocks || [];
+          imageWidth = Number(ocrResult.imageWidth || 1);
+          imageHeight = Number(ocrResult.imageHeight || 1);
+          const fallbackScale = display.scaleFactor || 1;
+          const scaleX = getImageScale(imageWidth, attempt.rect.width, fallbackScale);
+          const scaleY = getImageScale(imageHeight, attempt.rect.height, fallbackScale);
+          scaledBlocks = scaleOcrBlocks(blocks, scaleX, scaleY);
+          if (scaledBlocks.length) {
+            matchedAttempt = true;
+            console.warn('[capture] matched', attempt.name, {
+              rect: attempt.rect,
+              scaleFactor: attempt.scaleFactor,
+              imageWidth,
+              imageHeight
+            });
+            mapRectToImage = createImageRectMapper(scaleX, scaleY);
+            return true;
+          }
+        } catch (error) {
+          console.warn('[capture] attempt failed', attempt.name, {
+            rect: attempt.rect,
+            scaleFactor: attempt.scaleFactor,
+            error: String(getErrorMessage(error))
+          });
+        } finally {
+          if (imagePath && !keepLast && !matchedAttempt) {
+            await cleanupImage(imagePath);
+          }
+          if (!matchedAttempt && !keepLast) {
+            imagePath = null;
+          }
+        }
+      }
+      return false;
+    };
 
-    if (useFullCapture) {
-      imagePath = await captureScreen();
+    const tryFullScreenCapture = async () => {
+      sourceImagePath = await captureScreen();
       await showProgress();
+      const fullImage = nativeImage.createFromPath(sourceImagePath);
+      if (fullImage.isEmpty()) {
+        throw new Error('full_capture_empty');
+      }
+      const fullSize = fullImage.getSize();
+      const fullImageWidth = Number(fullSize.width || 1);
+      const fullImageHeight = Number(fullSize.height || 1);
+      const virtualBounds = getVirtualBounds();
+      const fallbackScale = display.scaleFactor || 1;
+      const fullScaleX = getImageScale(fullImageWidth, virtualBounds.width, fallbackScale);
+      const fullScaleY = getImageScale(fullImageHeight, virtualBounds.height, fallbackScale);
+      const cropX = Math.round((absoluteRect.x - virtualBounds.x) * fullScaleX);
+      const cropY = Math.round((absoluteRect.y - virtualBounds.y) * fullScaleY);
+      const cropW = Math.max(1, Math.round(absoluteRect.width * fullScaleX));
+      const cropH = Math.max(1, Math.round(absoluteRect.height * fullScaleY));
+      const clampedCropX = clamp(cropX, 0, Math.max(0, fullImageWidth - 1));
+      const clampedCropY = clamp(cropY, 0, Math.max(0, fullImageHeight - 1));
+      const clampedCropW = clamp(cropW, 1, Math.max(1, fullImageWidth - clampedCropX));
+      const clampedCropH = clamp(cropH, 1, Math.max(1, fullImageHeight - clampedCropY));
+      const croppedImage = fullImage.crop({
+        x: clampedCropX,
+        y: clampedCropY,
+        width: clampedCropW,
+        height: clampedCropH
+      });
+      const debugImagePath = process.env.SNAP_TRANSLATE_DEBUG_IMAGE_PATH;
+      const cropImagePath = keepLast
+        ? debugImagePath
+          ? path.join(
+              path.dirname(debugImagePath),
+              `${path.basename(debugImagePath, path.extname(debugImagePath) || '.png')}-crop${path.extname(debugImagePath) || '.png'}`
+            )
+          : path.join(os.tmpdir(), 'snap-translate-last-crop.png')
+        : path.join(os.tmpdir(), `snap-translate-crop-${Date.now()}.png`);
+      fs.writeFileSync(cropImagePath, croppedImage.toPNG());
+      imagePath = cropImagePath;
+
       const ocrResult = await ocrProvider.recognize(imagePath);
       const blocks = ocrResult.blocks || [];
-      imageWidth = Number(ocrResult.imageWidth || 1);
-      imageHeight = Number(ocrResult.imageHeight || 1);
-      const virtualBounds = getVirtualBounds();
-      const scaleX = imageWidth > 0 ? imageWidth / Math.max(virtualBounds.width, 1) : display.scaleFactor || 1;
-      const scaleY = imageHeight > 0 ? imageHeight / Math.max(virtualBounds.height, 1) : display.scaleFactor || 1;
-      const cropX = Math.round((absoluteRect.x - virtualBounds.x) * scaleX);
-      const cropY = Math.round((absoluteRect.y - virtualBounds.y) * scaleY);
-      const cropW = Math.round(absoluteRect.width * scaleX);
-      const cropH = Math.round(absoluteRect.height * scaleY);
-      const cropRight = cropX + cropW;
-      const cropBottom = cropY + cropH;
-      mapRectToImage = (bbox) => ({
-        x: Math.round(bbox.x * scaleX + cropX),
-        y: Math.round(bbox.y * scaleY + cropY),
-        width: Math.round(bbox.width * scaleX),
-        height: Math.round(bbox.height * scaleY)
-      });
+      imageWidth = Number(ocrResult.imageWidth || croppedImage.getSize().width || 1);
+      imageHeight = Number(ocrResult.imageHeight || croppedImage.getSize().height || 1);
+      const scaleX = getImageScale(imageWidth, absoluteRect.width, fullScaleX);
+      const scaleY = getImageScale(imageHeight, absoluteRect.height, fullScaleY);
+      mapRectToImage = createImageRectMapper(scaleX, scaleY);
+      scaledBlocks = scaleOcrBlocks(blocks, scaleX, scaleY);
 
-      scaledBlocks = blocks
-        .filter((block) => {
-          const bx = block.bbox.x;
-          const by = block.bbox.y;
-          const bw = block.bbox.width;
-          const bh = block.bbox.height;
-          return bx + bw > cropX && by + bh > cropY && bx < cropRight && by < cropBottom;
-        })
-        .map((block) => ({
-          ...block,
-          bbox: {
-            x: Math.max(0, Math.round((block.bbox.x - cropX) / scaleX)),
-            y: Math.max(0, Math.round((block.bbox.y - cropY) / scaleY)),
-            width: Math.round(block.bbox.width / scaleX),
-            height: Math.round(block.bbox.height / scaleY)
-          }
-        }));
-
-      console.warn('[capture] full', {
+      console.warn('[capture] full-crop', {
+        fullImageWidth,
+        fullImageHeight,
         imageWidth,
         imageHeight,
         virtualBounds,
         displayBounds,
-        scaleX,
-        scaleY,
+        fullScaleX,
+        fullScaleY,
         cropX,
         cropY,
         cropW,
         cropH,
+        clampedCropX,
+        clampedCropY,
+        clampedCropW,
+        clampedCropH,
         blocks: scaledBlocks.length
       });
-    } else {
-      const attempts = buildCaptureAttempts(absoluteRect, display);
-      for (const attempt of attempts) {
-        imagePath = await captureRect(attempt.rect, attempt.scaleFactor);
-        await showProgress();
-        const ocrResult = await ocrProvider.recognize(imagePath);
-        const blocks = ocrResult.blocks || [];
-        imageWidth = Number(ocrResult.imageWidth || 1);
-        imageHeight = Number(ocrResult.imageHeight || 1);
-        const scaleX = imageWidth > 0 ? imageWidth / Math.max(attempt.rect.width, 1) : display.scaleFactor || 1;
-        const scaleY = imageHeight > 0 ? imageHeight / Math.max(attempt.rect.height, 1) : display.scaleFactor || 1;
-        scaledBlocks = blocks.map((block) => ({
-          ...block,
-          bbox: {
-            x: Math.round(block.bbox.x / scaleX),
-            y: Math.round(block.bbox.y / scaleY),
-            width: Math.round(block.bbox.width / scaleX),
-            height: Math.round(block.bbox.height / scaleY)
-          }
-        }));
-        if (scaledBlocks.length) {
-          console.warn('[capture] matched', attempt.name, {
-            rect: attempt.rect,
-            scaleFactor: attempt.scaleFactor,
-            imageWidth,
-            imageHeight
-          });
-          mapRectToImage = (bbox) => ({
-            x: Math.round(bbox.x * scaleX),
-            y: Math.round(bbox.y * scaleY),
-            width: Math.round(bbox.width * scaleX),
-            height: Math.round(bbox.height * scaleY)
-          });
-          break;
-        }
-        if (imagePath && !keepLast) {
-          await cleanupImage(imagePath);
-        }
-      }
+      return scaledBlocks.length > 0;
+    };
+
+    const matchedPreciseCapture = await tryPreciseCapture();
+    if (!matchedPreciseCapture && allowFullCaptureFallback) {
+      console.warn('[capture] precise capture missed, falling back to full-screen crop');
+      await tryFullScreenCapture();
     }
 
     if (!scaledBlocks.length) {
@@ -1034,9 +1306,17 @@ async function runPipeline(rect) {
     const sourceLang = settings?.sourceLang || 'auto';
     const targetLang = settings?.targetLang || 'zh-CN';
     const translatedItems = await translationProvider.translateBlocks(scaledBlocks, sourceLang, targetLang, settings);
-    const renderBlocks = layoutEngine.mapBlocks(scaledBlocks, translatedItems);
-    const sampled = sampleOverlayColors(imagePath, mapRectToImage, absoluteRect, scaledBlocks);
-    if (sampled) {
+    const renderBlocks = layoutEngine.mapBlocks(scaledBlocks, translatedItems, {
+      selectionRect: absoluteRect
+    });
+    const usesCompactMaskReplace = renderBlocks.some(
+      (block) => block.styleHint?.layoutMode === 'compact-mask-replace'
+    );
+    snapshotDataUrl = usesCompactMaskReplace ? null : imagePathToDataUrl(imagePath);
+    const sampled = usesCompactMaskReplace
+      ? null
+      : sampleOverlayColors(imagePath, mapRectToImage, absoluteRect, scaledBlocks);
+    if (sampled && !usesCompactMaskReplace) {
       for (const block of renderBlocks) {
         const color = sampled.blockColors.get(block.id);
         if (!color) {
@@ -1048,203 +1328,211 @@ async function runPipeline(rect) {
       }
     }
 
-    const win = await ensureOverlayWindowReady();
-    win.setBounds({
-      x: absoluteRect.x,
-      y: absoluteRect.y,
-      width: absoluteRect.width,
-      height: absoluteRect.height
-    });
-    win.showInactive();
-    win.webContents.send('overlay:render', {
+    await renderOverlayPayload(absoluteRect, {
       rect: absoluteRect,
       blocks: renderBlocks,
-      hasText: scaledBlocks.length > 0,
-      mask: true,
-      textOnly: true,
-      maskOpacity: 1,
-      maskColor: sampled?.maskColor ? colorToCss(sampled.maskColor) : undefined
+      ...(usesCompactMaskReplace
+        ? buildTextOnlyOverlayOptions({ maskOpacity: 0.35 }, scaledBlocks.length > 0)
+        : buildResultOverlayOptions(
+            snapshotDataUrl,
+            sampled?.maskColor,
+            false,
+            scaledBlocks.length > 0
+          ))
     });
   } catch (error) {
-    const message = String(error && error.message ? error.message : error);
+    const message = String(getErrorMessage(error));
     const isTimeout = message === 'timeout' || /aborted|timeout/i.test(message);
     const friendly = isTimeout
       ? '翻译超时，请稍后重试。'
       : `翻译失败，可重试\n${message}`;
-    const win = await ensureOverlayWindowReady();
-    win.setBounds({
-      x: absoluteRect.x,
-      y: absoluteRect.y,
-      width: absoluteRect.width,
-      height: absoluteRect.height
+    snapshotDataUrl = snapshotDataUrl || imagePathToDataUrl(imagePath);
+    const errorBlock = buildOverlayRectBlock('error', absoluteRect, friendly, {
+      fontSize: 18,
+      lineHeight: 1.28,
+      padding: 8,
+      background: 'transparent',
+      color: '#ffe3e3',
+      textShadow: '0 2px 8px rgba(60, 0, 0, 0.85)'
     });
-    win.showInactive();
-    win.webContents.send('overlay:render', {
+    await renderOverlayPayload(absoluteRect, {
       rect: absoluteRect,
-      blocks: [
-        {
-          id: 'error',
-          bbox: { x: 0, y: 0, width: absoluteRect.width, height: absoluteRect.height },
-          text: friendly,
-          styleHint: {
-            fontSize: 18,
-            lineHeight: 1.4,
-            padding: 10,
-            background: 'rgba(255,245,245,0.95)',
-            color: '#8b0000'
-          }
-        }
-      ],
-      hasText: false
+      blocks: [errorBlock],
+      snapshotDataUrl,
+      ...buildTextOnlyOverlayOptions({ maskOpacity: snapshotDataUrl ? 0.28 : 0.88 }, false)
     });
   } finally {
-    if (imagePath && !keepLast) {
-      await cleanupImage(imagePath);
+    await cleanupCapturedImages([imagePath, sourceImagePath], keepLast);
+  }
+}
+
+function configureMacAppAppearance() {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const accessory = process.env.SNAP_TRANSLATE_ACCESSORY === '1';
+  if (accessory) {
+    if (app.dock?.hide) {
+      app.dock.hide();
+    }
+    if (app.setActivationPolicy) {
+      app.setActivationPolicy('accessory');
+    }
+  } else {
+    if (app.setActivationPolicy) {
+      app.setActivationPolicy('regular');
+    }
+    if (app.dock?.show) {
+      app.dock.show();
     }
   }
+
+  if (app.dock?.setIcon) {
+    app.dock.setIcon(appIconPath);
+  }
+}
+
+function logHotkeyStatus(ok) {
+  if (!settings.hotkey) {
+    console.log('[desktop] hotkey disabled');
+    return;
+  }
+  if (!ok) {
+    console.error(`[desktop] failed to register hotkey: ${settings.hotkey}`);
+    return;
+  }
+  console.log(`[desktop] hotkey ready: ${settings.hotkey}`);
+}
+
+async function handleSelectionComplete(_, rect) {
+  const targetRect = resolvePipelineTargetRect(rect);
+  if (!targetRect) {
+    closeSelectionWindow();
+    return;
+  }
+  hideSelectionWindowForCapture();
+  try {
+    await runPipeline(targetRect);
+  } finally {
+    if (!shouldKeepSelectionWindowForOverlay()) {
+      closeSelectionWindow();
+    }
+  }
+}
+
+function handleOverlayIgnoreMouseEvents(_, shouldIgnore = true) {
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
+    return false;
+  }
+  if (shouldIgnore) {
+    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    return true;
+  }
+  overlayWindow.setIgnoreMouseEvents(false);
+  return true;
+}
+
+function handleOverlayMetrics(_, payload) {
+  try {
+    console.warn('[overlay:metrics]', JSON.stringify(payload));
+  } catch (error) {
+    console.warn('[overlay:metrics] failed to serialize', getErrorMessage(error));
+  }
+}
+
+function handleTranslateOpen(_, options = {}) {
+  showTranslateWindow(options);
+  return true;
+}
+
+function handleSettingsOpen(_, options = {}) {
+  showSettingsWindow(options);
+  return true;
+}
+
+async function handleSettingsSet(_, next) {
+  const payload = sanitizeSettings(next);
+  let hotkeyError = null;
+  let launchAtLoginError = null;
+  if (Object.hasOwn(payload, 'hotkey') && payload.hotkey !== settings.hotkey) {
+    const result = updateHotkey(payload.hotkey);
+    if (!result.ok) {
+      hotkeyError = result.error || 'hotkey_update_failed';
+      delete payload.hotkey;
+    }
+  }
+  if (typeof next?.launchAtLogin === 'boolean') {
+    const currentLaunchAtLogin = getLaunchAtLoginState().launchAtLogin;
+    if (next.launchAtLogin !== currentLaunchAtLogin) {
+      const result = updateLaunchAtLogin(next.launchAtLogin);
+      if (!result.ok) {
+        launchAtLoginError = result.error || 'launch_at_login_update_failed';
+      }
+    }
+  }
+  saveSettings(payload);
+  return {
+    ok: !hotkeyError && !launchAtLoginError,
+    error: hotkeyError || launchAtLoginError,
+    settings: buildRendererSettings()
+  };
+}
+
+async function handleTranslateText(_, payload) {
+  const text = String(payload?.text || '').trim();
+  if (!text) {
+    return { ok: false, error: 'empty_text' };
+  }
+  try {
+    const sourceLang = normalizeLang(payload?.sourceLang, settings?.sourceLang || 'auto');
+    const targetLang = normalizeLang(payload?.targetLang, settings?.targetLang || 'zh-CN');
+    const result = await translationProvider.translateText(text, sourceLang, targetLang, settings);
+    return { ok: true, text: result.text, confidence: result.confidence };
+  } catch (error) {
+    return { ok: false, error: String(getErrorMessage(error)) };
+  }
+}
+
+function registerIpcHandlers() {
+  ipcMain.handle('selection:cancel', closeSelectionWindow);
+  ipcMain.on('selection:cursor-point-sync', (event) => {
+    event.returnValue = screen.getCursorScreenPoint();
+  });
+  ipcMain.handle('selection:complete', handleSelectionComplete);
+  ipcMain.handle('overlay:close', () => {
+    hideOverlayWindows();
+    closeSelectionWindow();
+  });
+  ipcMain.handle('overlay:set-ignore-mouse-events', handleOverlayIgnoreMouseEvents);
+  ipcMain.on('overlay:metrics', handleOverlayMetrics);
+  ipcMain.handle('settings:get', buildRendererSettings);
+  ipcMain.handle('app:move-to-applications', moveToApplicationsFolder);
+  ipcMain.handle('launch-at-login:repair', async (_, openAtLogin = false) =>
+    repairLaunchAtLogin(Boolean(openAtLogin))
+  );
+  ipcMain.handle('settings:open', handleSettingsOpen);
+  ipcMain.handle('translate:open', handleTranslateOpen);
+  ipcMain.handle('settings:set', handleSettingsSet);
+  ipcMain.handle('hotkey:update', async (_, hotkey) => updateHotkey(hotkey));
+  ipcMain.handle('translate:text', handleTranslateText);
 }
 
 app.whenReady().then(async () => {
   app.setName(APP_NAME);
   app.name = APP_NAME;
-  if (process.platform === 'darwin') {
-    const accessory = process.env.SNAP_TRANSLATE_ACCESSORY === '1';
-    if (accessory) {
-      if (app.dock && app.dock.hide) {
-        app.dock.hide();
-      }
-      if (app.setActivationPolicy) {
-        app.setActivationPolicy('accessory');
-      }
-    } else {
-      if (app.setActivationPolicy) {
-        app.setActivationPolicy('regular');
-      }
-      if (app.dock && app.dock.show) {
-        app.dock.show();
-      }
-    }
-    if (app.dock && app.dock.setIcon) {
-      app.dock.setIcon(appIconPath);
-    }
-  }
+  configureMacAppAppearance();
 
   settings = loadSettings();
   setupMenu();
   ensureTray();
 
   const ok = registerHotkey(settings.hotkey);
-  if (!settings.hotkey) {
-    console.log('[desktop] hotkey disabled');
-  } else if (!ok) {
-    console.error(`[desktop] failed to register hotkey: ${settings.hotkey}`);
-  } else {
-    console.log(`[desktop] hotkey ready: ${settings.hotkey}`);
-  }
+  logHotkeyStatus(ok);
 
   // Show a window on launch so the app isn't "invisible" to users.
   showTranslateWindow();
-
-  ipcMain.handle('selection:cancel', () => {
-    closeSelectionWindow();
-  });
-
-  ipcMain.handle('selection:complete', async (_, rect) => {
-    if (!rect) {
-      closeSelectionWindow();
-      return;
-    }
-    let targetRect = rect;
-    if (rect.click) {
-      if (rect.snapped === 'window' && rect.width > 6 && rect.height > 6) {
-        targetRect = {
-          x: rect.x,
-          y: rect.y,
-          width: rect.width,
-          height: rect.height
-        };
-      } else {
-        closeSelectionWindow();
-        return;
-      }
-    } else if (rect.width < 6 || rect.height < 6) {
-      closeSelectionWindow();
-      return;
-    }
-    hideSelectionWindowForCapture();
-    try {
-      await runPipeline(targetRect);
-    } finally {
-      closeSelectionWindow();
-    }
-  });
-
-  ipcMain.handle('overlay:close', () => {
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.hide();
-    }
-  });
-
-  ipcMain.handle('settings:get', () => buildRendererSettings());
-  ipcMain.handle('app:move-to-applications', async () => moveToApplicationsFolder());
-  ipcMain.handle('launch-at-login:repair', async (_, openAtLogin = false) =>
-    repairLaunchAtLogin(Boolean(openAtLogin))
-  );
-
-  ipcMain.handle('settings:open', (_, options = {}) => {
-    showSettingsWindow(options);
-    return true;
-  });
-
-  ipcMain.handle('translate:open', (_, options = {}) => {
-    showTranslateWindow(options);
-    return true;
-  });
-
-  ipcMain.handle('settings:set', async (_, next) => {
-    const payload = sanitizeSettings(next);
-    let hotkeyError = null;
-    let launchAtLoginError = null;
-    if (Object.hasOwn(payload, 'hotkey') && payload.hotkey !== settings.hotkey) {
-      const result = updateHotkey(payload.hotkey);
-      if (!result.ok) {
-        hotkeyError = result.error || 'hotkey_update_failed';
-        delete payload.hotkey;
-      }
-    }
-    if (typeof next?.launchAtLogin === 'boolean') {
-      const currentLaunchAtLogin = getLaunchAtLoginState().launchAtLogin;
-      if (next.launchAtLogin !== currentLaunchAtLogin) {
-        const result = updateLaunchAtLogin(next.launchAtLogin);
-        if (!result.ok) {
-          launchAtLoginError = result.error || 'launch_at_login_update_failed';
-        }
-      }
-    }
-    saveSettings(payload);
-    return {
-      ok: !hotkeyError && !launchAtLoginError,
-      error: hotkeyError || launchAtLoginError,
-      settings: buildRendererSettings()
-    };
-  });
-
-  ipcMain.handle('hotkey:update', async (_, hotkey) => updateHotkey(hotkey));
-
-  ipcMain.handle('translate:text', async (_, payload) => {
-    const text = String(payload?.text || '').trim();
-    if (!text) {
-      return { ok: false, error: 'empty_text' };
-    }
-    try {
-      const sourceLang = normalizeLang(payload?.sourceLang, settings?.sourceLang || 'auto');
-      const targetLang = normalizeLang(payload?.targetLang, settings?.targetLang || 'zh-CN');
-      const result = await translationProvider.translateText(text, sourceLang, targetLang, settings);
-      return { ok: true, text: result.text, confidence: result.confidence };
-    } catch (error) {
-      return { ok: false, error: String(error.message || error) };
-    }
-  });
+  registerIpcHandlers();
 
   // window controls are handled by the system title bar
 

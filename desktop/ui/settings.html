@@ -4,8 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Settings</title>
+    <script src="./theme-bootstrap.js?v=1"></script>
     <link rel="stylesheet" href="../../node_modules/@awesome.me/webawesome/dist-cdn/styles/webawesome.css" />
-    <link rel="stylesheet" href="./theme.css?v=3" />
+    <link rel="stylesheet" href="./theme.css?v=4" />
     <link rel="stylesheet" href="./settings.css?v=5" />
   </head>
   <body>
@@ -36,6 +37,19 @@
             <wa-select id="engine" label="模式">
               <wa-option value="api">翻译接口</wa-option>
               <wa-option value="llm">直连 LLM</wa-option>
+            </wa-select>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <h2>外观</h2>
+              <p>默认跟随系统，也可以手动固定成浅色或深色。</p>
+            </div>
+
+            <wa-select id="theme" label="主题模式">
+              <wa-option value="system">跟随系统</wa-option>
+              <wa-option value="light">浅色</wa-option>
+              <wa-option value="dark">深色</wa-option>
             </wa-select>
           </section>
 
