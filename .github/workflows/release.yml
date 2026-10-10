@@ -65,7 +65,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-22.04
+          # PipeWire 1.0 headers (Ubuntu 24.04). Ubuntu 22.04's 0.3 headers
+          # do not match libspa 0.8, which xcap needs for screenshots.
+          - platform: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             args: ""
           - platform: macos-latest
@@ -87,7 +89,7 @@ jobs:
           cache: npm
 
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
