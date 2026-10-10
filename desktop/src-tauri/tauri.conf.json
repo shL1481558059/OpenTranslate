@@ -38,12 +38,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/opentranslate-node"],
     "resources": {
       "../../api/": "api/",
-      "../../load-env.js": "load-env.js",
       "../lib/": "desktop/lib/",
-      "models/ocr/": "models/ocr/",
       "swift/": "swift/"
     }
   }

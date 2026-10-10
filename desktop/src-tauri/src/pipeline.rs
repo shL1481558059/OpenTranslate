@@ -34,6 +34,18 @@ pub async fn run(app: AppHandle, rect: Rect) {
         }
     };
     let image = captured;
+    #[cfg(target_os = "linux")]
+    {
+        let dir = paths::ocr_dir(&app);
+        if !crate::ocr_models::present(&dir) {
+            emit_status(&app, rect, host, "正在下载 OCR 模型…", 0.35, "#ffffff");
+        }
+        if let Err(error) = crate::ocr_models::ensure(&dir).await {
+            emit_status(&app, rect, host, &format!("识别失败：{error}"), 0.88, "#ffe3e3");
+            return;
+        }
+        std::env::set_var("OPENTRANSLATE_OCR_DIR", &dir);
+    }
     let recognized = match tauri::async_runtime::spawn_blocking({
         let image = image.clone();
         move || ocr_engine::recognize_image(&image)
@@ -85,7 +97,7 @@ pub async fn run(app: AppHandle, rect: Rect) {
         )
         .await
     } else {
-        crate::sidecar::wait_until_ready().await;
+        crate::embedded_api::wait_until_ready().await;
         translate::translate_texts(
             &settings.translation_api_url,
             &texts,

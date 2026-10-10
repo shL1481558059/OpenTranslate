@@ -50,7 +50,7 @@ jobs:
               name: `OpenTranslate ${tag}`,
               body: [
                 'OpenTranslate desktop installers.',
-                'Each package bundles the Node translation API as a sidecar, the DeepL-compatible `/v2/translate` service, and the Linux OCR models. macOS uses Apple Vision and Windows uses Windows.Media.Ocr.',
+                'Each package embeds a DeepL-compatible `/v2/translate` service in the desktop process. macOS uses Apple Vision, Windows uses Windows.Media.Ocr, and Linux downloads PP-OCRv4 models on first OCR.',
               ].join('\n'),
               draft: true,
             });
@@ -112,14 +112,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download OCR models
-        run: node scripts/prepare-ocr-models.js
-
-      - name: Download Node sidecar
-        env:
-          TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
-        run: node scripts/prepare-node-sidecar.js
-
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -131,6 +123,6 @@ jobs:
           releaseName: OpenTranslate ${{ needs.create-release.outputs.tag_name }}
           releaseBody: |
             OpenTranslate desktop installers.
-            Each package bundles the Node translation API as a sidecar, the DeepL-compatible `/v2/translate` service, and the Linux OCR models. macOS uses Apple Vision and Windows uses Windows.Media.Ocr.
+            Each package embeds a DeepL-compatible `/v2/translate` service in the desktop process. macOS uses Apple Vision, Windows uses Windows.Media.Ocr, and Linux downloads PP-OCRv4 models on first OCR.
           releaseDraft: true
           args: ${{ matrix.args }}

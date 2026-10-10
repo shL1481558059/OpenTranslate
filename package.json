@@ -7,7 +7,7 @@
   "scripts": {
     "start:api": "node api/server.js",
     "start:desktop": "node scripts/run-tauri.js dev",
-    "dist": "node scripts/prepare-ocr-models.js && node scripts/prepare-node-sidecar.js && node scripts/run-tauri.js build",
+    "dist": "node scripts/run-tauri.js build",
     "test": "node --test tests/*.test.js"
   },
   "engines": {

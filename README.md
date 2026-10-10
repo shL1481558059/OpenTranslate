@@ -1,6 +1,6 @@
 # OpenTranslate
 
-Screenshot translation for macOS, Windows, and Linux. The desktop app is Tauri v2. A bundled Node service speaks the DeepL API v2 translate contract and runs Argos or Marian locally.
+Screenshot translation for macOS, Windows, and Linux. The desktop app is Tauri v2. The translation HTTP service is embedded in the Tauri process, speaks the DeepL API v2 contract, and runs Argos through a local Python worker. The standalone Node server remains available for Docker and the test suite.
 
 ## What it does
 
@@ -16,7 +16,7 @@ Screenshot translation for macOS, Windows, and Linux. The desktop app is Tauri v
 - `desktop/`: Tauri shell and the existing HTML UI
 - `desktop/src-tauri/`: Rust app, screenshot capture, and OCR
 - `api/`: DeepL-compatible translation service (`POST /v2/translate`)
-- `desktop/src-tauri/models/ocr/`: PP-OCRv4 mobile ONNX models used on Linux
+- `desktop/src-tauri/models/ocr/`: optional local copy of the PP-OCRv4 models. Installers do not ship them; Linux downloads them on first OCR.
 
 ## OCR
 
@@ -30,7 +30,7 @@ Linux recognition of a normal selection is well under a second after the model i
 
 ## Develop
 
-Requirements: Node.js 20+, Rust stable, and the Tauri system packages for your OS. Linux OCR also needs the ONNX models in `desktop/src-tauri/models/ocr/` (`node scripts/prepare-ocr-models.js` downloads them).
+Requirements: Node.js 20+, Rust stable, and the Tauri system packages for your OS. Linux OCR uses the ONNX models in `desktop/src-tauri/models/ocr/` during development (`node scripts/prepare-ocr-models.js` downloads them). A packaged Linux build downloads the same files into the app data directory the first time OCR runs.
 
 ```bash
 npm install
@@ -38,7 +38,7 @@ cp .env.example .env
 npm run start:desktop
 ```
 
-`npm run start:desktop` serves the UI and starts the Tauri shell. The shell starts `api/server.js` with the system Node binary. Environment variables in `.env` override `api/config.json`.
+`npm run start:desktop` serves the UI and starts the Tauri shell. The shell listens on `127.0.0.1:8787` from inside the app process. Environment variables in `.env` override `api/config.json`. Overlay layout still calls system `node` when it is installed, and falls back to the built-in layout otherwise.
 
 For Argos, set `TRANSLATION_ENGINE=argos`, put `.argosmodel` files in `models/argos/`, and let the first request create `./.venv`. Marian is selected with `TRANSLATION_ENGINE=marian`.
 
@@ -67,9 +67,9 @@ The admin UI at `http://127.0.0.1:8787/admin` can try `/v2/translate` and still 
 
 ## How the API is packaged
 
-Development uses the system `node` executable and the repository `api/` tree.
+The desktop process embeds the DeepL-compatible HTTP service. Release builds strip debug symbols. Installers include `api/` (Python workers and the admin page), `desktop/lib/`, and the Apple Vision Swift source. They do not include a Node runtime or the PP-OCRv4 models. macOS and Windows use the system OCR engines. Linux downloads `det.onnx`, `rec.onnx`, and `keys.txt` on first OCR and reports a clear error if that download fails.
 
-Release builds download a Node binary into `desktop/src-tauri/binaries/opentranslate-node-<target>` (`node scripts/prepare-node-sidecar.js`) and Tauri ships it as an external sidecar named `opentranslate-node`, so the package does not replace a system `node` binary. The installer also contains `api/`, `load-env.js`, `desktop/lib/`, the Linux OCR models, and the Apple Vision Swift source. On first launch the packaged app sets `SNAP_TRANSLATE_IS_PACKAGED=1` and creates the Argos or Marian virtualenv under the app data directory, using the system `python3`. PyTorch is only installed when Marian is selected, because that dependency is large.
+`npm run start:api` and Docker still run the Node server in `api/server.js`. The Node server is what `npm test` exercises. The packaged app does not start it.
 
 ```bash
 npm run dist

@@ -1,14 +1,15 @@
 mod capture;
 mod cursor;
+mod deepl;
+mod embedded_api;
 mod hotkey;
+mod ocr_models;
 mod paths;
 mod pipeline;
 mod settings;
-mod sidecar;
 mod translate;
 
 use std::collections::HashSet;
-use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -30,8 +31,11 @@ use settings::Settings;
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub ready: Mutex<HashSet<String>>,
-    pub api: Mutex<Option<Child>>,
     pub selecting: AtomicBool,
+}
+
+pub fn serve_api_blocking() -> i32 {
+    embedded_api::serve_blocking()
 }
 
 pub fn run() {
@@ -66,7 +70,6 @@ pub fn run() {
         .manage(AppState {
             settings: Mutex::new(settings),
             ready: Mutex::new(HashSet::new()),
-            api: Mutex::new(None),
             selecting: AtomicBool::new(false),
         })
         .setup(|app| {
@@ -85,12 +88,15 @@ pub fn run() {
             } else if !hotkey.is_empty() {
                 eprintln!("[hotkey] ready: {hotkey}");
             }
-            sidecar::ensure_started(app.handle());
-            std::thread::spawn(|| {
-                if let Err(error) = ocr_engine::preload() {
-                    eprintln!("[ocr] preload failed: {error}");
-                }
-            });
+            embedded_api::spawn(api_paths(app.handle()));
+            let ocr_dir = paths::ocr_dir(app.handle());
+            if ocr_models::present(&ocr_dir) {
+                std::thread::spawn(|| {
+                    if let Err(error) = ocr_engine::preload() {
+                        eprintln!("[ocr] preload failed: {error}");
+                    }
+                });
+            }
             if let Ok(spec) = std::env::var("SNAP_TRANSLATE_RUN_RECT") {
                 if let Some(rect) = parse_run_rect(&spec) {
                     let app = app.handle().clone();
@@ -128,6 +134,37 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("OpenTranslate failed to start");
+}
+
+fn api_paths(app: &AppHandle) -> embedded_api::ApiPaths {
+    let resources = paths::resource_root(app);
+    let data = paths::data_dir(app);
+    let packaged = paths::is_packaged();
+    let api_dir = {
+        let bundled = resources.join("api");
+        if bundled.join("local").join("argos_worker.py").exists() { bundled } else { paths::repo_root().join("api") }
+    };
+    let work_dir = if packaged { data.clone() } else { paths::repo_root() };
+    let config_path = if packaged {
+        let stored = data.join("config.json");
+        if !stored.exists() {
+            let _ = std::fs::create_dir_all(&data);
+            let seed = api_dir.join("config.json");
+            if seed.exists() {
+                let _ = std::fs::copy(&seed, &stored);
+            }
+        }
+        stored
+    } else {
+        api_dir.join("config.json")
+    };
+    embedded_api::ApiPaths {
+        usage_path: if packaged { data.join("usage.json") } else { api_dir.join("usage.json") },
+        dotenv_path: if packaged { data.join(".env") } else { paths::repo_root().join(".env") },
+        api_dir,
+        work_dir,
+        config_path,
+    }
 }
 
 fn configure_runtime(app: &AppHandle) {
@@ -592,7 +629,7 @@ async fn translate_text(app: AppHandle, text: String, source_lang: Option<String
     let result = if settings.engine == "llm" {
         translate::translate_with_llm(&settings.llm_api_url, &settings.llm_api_key, &settings.llm_model, &[text], &source, &target).await
     } else {
-        sidecar::wait_until_ready().await;
+        embedded_api::wait_until_ready().await;
         translate::translate_texts(&settings.translation_api_url, &[text], &source, &target).await
     };
     match result {

@@ -1,6 +1,6 @@
 # OpenTranslate
 
-跨平台截图翻译。桌面端是 Tauri v2，内置的 Node 服务按 DeepL API v2 提供翻译，本地引擎可以是 Argos 或 Marian。
+跨平台截图翻译。桌面端是 Tauri v2，翻译 HTTP 服务嵌在 Tauri 进程里，接口兼容 DeepL API v2，本地 Argos 仍通过 Python 子进程运行。独立的 Node 服务留给 Docker 和测试。
 
 ## 功能
 
@@ -16,7 +16,7 @@
 - `desktop/`：Tauri 壳和原来的 HTML 界面
 - `desktop/src-tauri/`：Rust 进程、截图和 OCR
 - `api/`：DeepL 兼容翻译服务（`POST /v2/translate`）
-- `desktop/src-tauri/models/ocr/`：Linux 使用的 PP-OCRv4 mobile ONNX 模型
+- `desktop/src-tauri/models/ocr/`：开发时可选的 PP-OCRv4 模型。安装包不再内嵌；Linux 首次 OCR 时下载。
 
 ## OCR
 
@@ -30,7 +30,7 @@ Linux 上模型预热后，常见框选大约 60–80 毫秒，首次加载大�
 
 ## 开发
 
-需要 Node.js 20+、Rust stable，以及当前系统的 Tauri 依赖。Linux OCR 模型在 `desktop/src-tauri/models/ocr/`，缺失时运行 `node scripts/prepare-ocr-models.js`。
+需要 Node.js 20+、Rust stable，以及当前系统的 Tauri 依赖。开发时 Linux OCR 模型在 `desktop/src-tauri/models/ocr/`，缺失时运行 `node scripts/prepare-ocr-models.js`。安装后的 Linux 版本会在第一次 OCR 时把同样的文件下载到应用数据目录。
 
 ```bash
 npm install
@@ -38,7 +38,7 @@ cp .env.example .env
 npm run start:desktop
 ```
 
-桌面端会拉起界面，并用系统里的 `node` 启动 `api/server.js`。`.env` 里的变量优先于 `api/config.json`。
+桌面端会拉起界面，并在本进程监听 `127.0.0.1:8787`。`.env` 里的变量优先于 `api/config.json`。浮层排版在系统装有 `node` 时仍会调用它，否则使用内置排版。
 
 Argos：`TRANSLATION_ENGINE=argos`，把 `.argosmodel` 放到 `models/argos/`，第一次翻译会创建 `./.venv`。Marian：`TRANSLATION_ENGINE=marian`。
 
@@ -67,9 +67,9 @@ npm run start:api
 
 ## 安装包里的翻译服务
 
-开发时用系统 `node` 和仓库里的 `api/`。
+桌面进程内嵌 DeepL 兼容 HTTP 服务。发布构建会去掉调试符号。安装包包含 `api/`（Python worker 和管理页）、`desktop/lib/` 和 Apple Vision 的 Swift 源文件，不再包含 Node 运行时，也不再包含 PP-OCRv4 模型。macOS 和 Windows 使用系统 OCR。Linux 在第一次 OCR 时下载 `det.onnx`、`rec.onnx` 和 `keys.txt`，下载失败会给出明确错误。
 
-发布时 `node scripts/prepare-node-sidecar.js` 会把对应平台的 Node 放到 `desktop/src-tauri/binaries/opentranslate-node-<triple>`。Tauri 把它作为 sidecar 打进安装包，安装后的文件名是 `opentranslate-node`，不会覆盖系统里的 `node`。同时打包 `api/`、`load-env.js`、`desktop/lib/`、Linux OCR 模型和 Vision 的 Swift 源文件。打包后的进程会设置 `SNAP_TRANSLATE_IS_PACKAGED=1`，并在应用数据目录用系统 `python3` 创建 Argos 或 Marian 虚拟环境。只有选择 Marian 时才会安装体积很大的 PyTorch。
+`npm run start:api` 和 Docker 仍然运行 `api/server.js`。`npm test` 测的是这个 Node 服务。安装包不会启动它。
 
 ```bash
 npm run dist
