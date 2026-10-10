@@ -1,5 +1,6 @@
 import './theme.js';
 import { languageOptions, shouldRetranslate } from './languages.mjs';
+import { presentTranslateError } from './status-text.mjs';
 import { initPageTransition, navigateWithTransition } from './page-transition.js';
 
 const inputEl = document.getElementById('input');
@@ -113,7 +114,7 @@ async function doTranslate() {
       return;
     }
     if (!result.ok) {
-      setStatus(`翻译失败：${result.error || '未知错误'}`, 'error');
+      setStatus(presentTranslateError(result.error), 'error');
       outputEl.value = '';
       return;
     }
@@ -124,7 +125,7 @@ async function doTranslate() {
     if (seq !== translateSeq) {
       return;
     }
-    setStatus(`翻译失败：${getErrorMessage(error)}`, 'error');
+    setStatus(presentTranslateError(getErrorMessage(error)), 'error');
     outputEl.value = '';
   } finally {
     if (seq === translateSeq) {

@@ -87,24 +87,17 @@ pub async fn translate(
     }
     ensure_configured(config)?;
     let client = http_client(config.timeout)?;
-    match config.provider.as_str() {
-        "deepl" => Ok(
-            translate_deepl(&client, config, texts, source_lang, target_lang)
-                .await?
-                .into_iter()
-                .map(TranslatedBlock::ok)
-                .collect(),
-        ),
+    let translated = match config.provider.as_str() {
+        "deepl" => translate_deepl(&client, config, texts, source_lang, target_lang)
+            .await
+            .map(|items| items.into_iter().map(TranslatedBlock::ok).collect()),
         "deeplx" => translate_deeplx(&client, config, texts, source_lang, target_lang).await,
-        "openai" => Ok(
-            translate_openai(&client, config, texts, source_lang, target_lang)
-                .await?
-                .into_iter()
-                .map(TranslatedBlock::ok)
-                .collect(),
-        ),
+        "openai" => translate_openai(&client, config, texts, source_lang, target_lang)
+            .await
+            .map(|items| items.into_iter().map(TranslatedBlock::ok).collect()),
         _ => Err("不支持的接口类型，请在设置中重新选择。".into()),
-    }
+    };
+    translated.map_err(|error| friendly_translate_error(&error, source_lang, target_lang))
 }
 
 pub async fn test_connection(config: &TranslateConfig) -> Result<String, String> {
@@ -228,7 +221,9 @@ async fn translate_deeplx(
             drop(permit);
             let block = match result {
                 Ok(text) => TranslatedBlock::ok(text),
-                Err(error) => TranslatedBlock::failed(error),
+                Err(error) => {
+                    TranslatedBlock::failed(friendly_translate_error(&error, &configured, &target))
+                }
             };
             (index, block)
         });
@@ -323,7 +318,10 @@ async fn translate_openai(
 }
 
 fn fallback_allowed(error: &str) -> bool {
-    !error.contains("认证失败") && !error.contains("尚未")
+    !error.contains("认证失败")
+        && !error.contains("尚未")
+        && !error.starts_with("当前翻译服务不支持")
+        && !is_unsupported_language(error)
 }
 
 async fn openai_once(
@@ -440,6 +438,9 @@ async fn send_text(
                     return Ok(body);
                 }
                 last = redact(http_error(status.as_u16(), &body), secret);
+                if is_unsupported_language(&body) || is_unsupported_language(&last) {
+                    return Err(last);
+                }
                 let retry = matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504 | 529);
                 if attempt == 0 && retry {
                     continue;
@@ -686,6 +687,98 @@ fn deeplx_lang(value: &str, source: bool) -> String {
         "PT-BR" | "PT-PT" => "PT".into(),
         "NB" | "NB-NO" | "NO" => "NB".into(),
         other => other.split('-').next().unwrap_or(other).to_string(),
+    }
+}
+
+fn is_unsupported_language(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("translation from")
+        && (lower.contains("not supported") || lower.contains("unsupported"))
+    {
+        return true;
+    }
+    let about_language = lower.contains("language")
+        || lower.contains("target_lang")
+        || lower.contains("source_lang")
+        || lower.contains("语言");
+    let rejected = lower.contains("not supported")
+        || lower.contains("unsupported")
+        || lower.contains("not support")
+        || lower.contains("不支持");
+    about_language && rejected
+}
+
+fn friendly_translate_error(error: &str, source_lang: &str, target_lang: &str) -> String {
+    if error.starts_with("当前翻译服务不支持") || !is_unsupported_language(error) {
+        return error.to_string();
+    }
+    let (from, to) = quoted_language_pair(error).unwrap_or_else(|| {
+        (
+            language_name_zh(source_lang),
+            language_name_zh(target_lang),
+        )
+    });
+    format!("当前翻译服务不支持 {from}→{to}，请换目标语言或更换接口")
+}
+
+fn quoted_language_pair(message: &str) -> Option<(String, String)> {
+    let lower = message.to_ascii_lowercase();
+    let from_at = lower.find("from ")?;
+    let after_from = &message[from_at + 5..];
+    let (source, rest) = next_quoted(after_from)?;
+    let to_at = rest.to_ascii_lowercase().find("to ")?;
+    let (target, _) = next_quoted(&rest[to_at + 3..])?;
+    if source.is_empty() || target.is_empty() {
+        return None;
+    }
+    Some((language_name_zh(&source), language_name_zh(&target)))
+}
+
+fn next_quoted(text: &str) -> Option<(String, &str)> {
+    let bytes = text.as_bytes();
+    let mut open_at = None;
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'\'' && *byte != b'"' {
+            continue;
+        }
+        if let Some(open) = open_at {
+            if *byte == bytes[open] {
+                return Some((text[open + 1..index].to_string(), &text[index + 1..]));
+            }
+        } else {
+            open_at = Some(index);
+        }
+    }
+    None
+}
+
+fn language_name_zh(value: &str) -> String {
+    let token = value.trim().to_ascii_lowercase().replace('_', "-");
+    match token.as_str() {
+        "" | "auto" | "auto-detect" => "自动".into(),
+        "zh-tw" | "zh-hk" | "zh-mo" | "zh-hant" => "中文繁体".into(),
+        "zh" | "zh-cn" | "zh-sg" | "zh-hans" | "cmn" | "zho" => "中文简体".into(),
+        "en" | "en-us" | "en-gb" | "en-uk" | "eng" => "英文".into(),
+        "ja" | "jpn" => "日文".into(),
+        "ko" | "kor" => "韩文".into(),
+        "fr" | "fra" => "法文".into(),
+        "de" | "deu" => "德文".into(),
+        "es" | "spa" => "西班牙文".into(),
+        "pt" | "pt-br" | "pt-pt" | "por" => "葡萄牙文".into(),
+        "it" | "ita" => "意大利文".into(),
+        "ru" | "rus" => "俄文".into(),
+        "ar" | "ara" => "阿拉伯文".into(),
+        "th" | "tha" => "泰文".into(),
+        "vi" | "vie" => "越南文".into(),
+        "id" | "ind" => "印尼文".into(),
+        _ => match token.split('-').next().unwrap_or("") {
+            "zh" => "中文简体".into(),
+            "en" => "英文".into(),
+            "ja" => "日文".into(),
+            "ko" => "韩文".into(),
+            other if !other.is_empty() => other.to_string(),
+            _ => value.trim().to_string(),
+        },
     }
 }
 
@@ -1098,6 +1191,100 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unsupported_language_is_not_retried() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let base = serve(Router::new().route(
+            "/v2/translate",
+            post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"message": "Translation from 'en' to 'ja' is not supported"})),
+                    )
+                }
+            }),
+        ))
+        .await;
+        let error = translate(&config("deepl", &base, "deepl-secret"), &["Hi".into()], "en", "ja")
+            .await
+            .expect_err("unsupported");
+        assert_eq!(
+            error,
+            "当前翻译服务不支持 英文→日文，请换目标语言或更换接口"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert!(!error.contains("翻译失败：翻译失败"), "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deeplx_and_openai_unsupported_pairs_stay_friendly() {
+        let deeplx_hits = Arc::new(AtomicUsize::new(0));
+        let counted = deeplx_hits.clone();
+        let deeplx = serve(Router::new().route(
+            "/deeplx",
+            post(move || {
+                let counted = counted.clone();
+                async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(
+                            json!({"error": "Translation from 'en' to 'ja' is not supported"}),
+                        ),
+                    )
+                }
+            }),
+        ))
+        .await;
+        let error = translate(
+            &config("deeplx", &format!("{deeplx}/deeplx"), ""),
+            &["Hello".into(), "World".into()],
+            "en",
+            "ja",
+        )
+        .await
+        .expect_err("deeplx unsupported");
+        assert_eq!(
+            error,
+            "当前翻译服务不支持 英文→日文，请换目标语言或更换接口"
+        );
+        assert_eq!(deeplx_hits.load(Ordering::SeqCst), 2);
+
+        let openai_hits = Arc::new(AtomicUsize::new(0));
+        let counted = openai_hits.clone();
+        let openai = serve(Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let counted = counted.clone();
+                async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": {"message": "Unsupported language pair"}})),
+                    )
+                }
+            }),
+        ))
+        .await;
+        let error = translate(
+            &config("openai", &openai, "openai-secret"),
+            &["Hello".into(), "World".into()],
+            "zh-CN",
+            "ja",
+        )
+        .await
+        .expect_err("openai unsupported");
+        assert_eq!(
+            error,
+            "当前翻译服务不支持 中文简体→日文，请换目标语言或更换接口"
+        );
+        assert_eq!(openai_hits.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test]
     async fn missing_endpoint_points_at_settings() {
         let error = translate(&config("deepl", "", "key"), &["Hi".into()], "en", "zh-CN")
@@ -1306,6 +1493,32 @@ mod tests {
         assert_eq!(deeplx_source_for("auto", "。。").as_deref(), None);
         assert_eq!(language_label("auto"), "auto-detect");
         assert_eq!(deeplx_lang("ja", false), "JA");
+        let linguaspark = friendly_translate_error(
+            "翻译失败（400）：Translation from 'en' to 'ja' is not supported",
+            "auto",
+            "ja",
+        );
+        assert_eq!(
+            linguaspark,
+            "当前翻译服务不支持 英文→日文，请换目标语言或更换接口"
+        );
+        assert_eq!(
+            friendly_translate_error(
+                "翻译失败（400）：Value for 'target_lang' not supported.",
+                "en",
+                "ja"
+            ),
+            "当前翻译服务不支持 英文→日文，请换目标语言或更换接口"
+        );
+        assert_eq!(
+            friendly_translate_error("翻译失败（400）：Unsupported language pair", "zh-CN", "ja"),
+            "当前翻译服务不支持 中文简体→日文，请换目标语言或更换接口"
+        );
+        assert_eq!(
+            friendly_translate_error("翻译失败（400）：block failed", "en", "ja"),
+            "翻译失败（400）：block failed"
+        );
+        assert_eq!(linguaspark, friendly_translate_error(&linguaspark, "en", "ja"));
         assert_eq!(
             openai_url("https://api.openai.com"),
             "https://api.openai.com/v1/chat/completions"
