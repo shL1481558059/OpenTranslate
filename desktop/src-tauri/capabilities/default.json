@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "description": "OpenTranslate desktop windows",
+  "windows": ["main", "selection", "overlay"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

@@ -1,186 +1,82 @@
-# OpenTranslate（Mac / Electron）中文文档
+# OpenTranslate
 
-本项目是一个 Mac 端截图翻译工具：
-- 全局快捷键触发
-- 框选屏幕区域
-- 本地 OCR（Apple Vision）提取文本块
-- 翻译 API 独立运行，支持 Argos / Marian
-- 译文覆盖在原区域（块级布局）
+跨平台截图翻译。桌面端是 Tauri v2，内置的 Node 服务按 DeepL API v2 提供翻译，本地引擎可以是 Argos 或 Marian。
 
-## 功能概览
+## 功能
 
-- 全局快捷键：默认 `Command+Shift+T`
-- 框选截图后自动翻译、无需二次点击
-- 译文覆盖原位置，块级对齐
-- 单次批量请求，超时 + 1 次重试
-- API 契约统一，可替换翻译后端
+- 全局快捷键：macOS 为 Command+Shift+T，Windows 和 Linux 为 Ctrl+Shift+T
+- 拖拽框选，或单击吸附窗口
+- 对截图像做 OCR，译文按原位置浮层覆盖
+- 复制原文、复制译文、手动翻译窗口
+- 主题、语言、快捷键、开机自启
+- 托盘菜单
 
-## 目录结构
+## 目录
 
-- `api/`：翻译 API 服务（`POST /v1/translate`）
-- `api/admin/`：后台管理页面
-- `desktop/`：Electron 客户端
-- `desktop/scripts/vision_ocr.swift`：本地 OCR 脚本
-- `tests/`：基础测试
+- `desktop/`：Tauri 壳和原来的 HTML 界面
+- `desktop/src-tauri/`：Rust 进程、截图和 OCR
+- `api/`：DeepL 兼容翻译服务（`POST /v2/translate`）
+- `desktop/src-tauri/models/ocr/`：Linux 使用的 PP-OCRv4 mobile ONNX 模型
 
-## 环境与依赖
+## OCR
 
-- Node.js `>= 20`
-- macOS（需要屏幕录制权限）
-- Xcode Command Line Tools（用于 `xcrun swift`）
-- （可选）Python 3（API 使用本地 Argos / Marian 模型时需要）
+| 平台 | 引擎 |
+| --- | --- |
+| macOS | Apple Vision，首次用 `swiftc` 编译后缓存 |
+| Windows | `Windows.Media.Ocr`（优先简体中文，其次英语和用户语言） |
+| Linux | PP-OCRv4 mobile 检测 + 识别，ONNX Runtime |
 
-## 快速开始（开发模式）
+Linux 上模型预热后，常见框选大约 60–80 毫秒，首次加载大约再加 150 毫秒。模型文件大约 15 MB。
 
-1. 安装依赖
+## 开发
+
+需要 Node.js 20+、Rust stable，以及当前系统的 Tauri 依赖。Linux OCR 模型在 `desktop/src-tauri/models/ocr/`，缺失时运行 `node scripts/prepare-ocr-models.js`。
+
 ```bash
 npm install
-```
-
-2. 配置环境变量
-```bash
 cp .env.example .env
-# 填入 LLM_API_KEY（如需直连 LLM）
-# 可选：设置 ADMIN_TOKEN 用于后台管理鉴权
-```
-
-3. 启动翻译 API（API 模式 / 本地模型需要）
-```bash
-export $(grep -v '^#' .env | xargs)
-npm run start:api
-```
-
-4. 启动桌面端
-```bash
-export $(grep -v '^#' .env | xargs)
 npm run start:desktop
 ```
 
-5. 使用
-- 按 `Command+Shift+T`
-- 拖拽框选区域
-- 等待译文覆盖
+桌面端会拉起界面，并用系统里的 `node` 启动 `api/server.js`。`.env` 里的变量优先于 `api/config.json`。
 
-本地模型管理建议：
-- 打开后台页 `http://127.0.0.1:8787/admin?token=...` 进行 Argos / Marian 模型下载与切换
-- 或手动放置 Argos 模型（`.argosmodel`）到 `models/argos/`
+Argos：`TRANSLATION_ENGINE=argos`，把 `.argosmodel` 放到 `models/argos/`，第一次翻译会创建 `./.venv`。Marian：`TRANSLATION_ENGINE=marian`。
 
-## 翻译 API 说明
-
-`POST /v1/translate`
-
-请求体：
-```json
-{
-  "request_id": "uuid",
-  "source_lang": "auto",
-  "target_lang": "zh-CN",
-  "items": [{ "id": "b1", "text": "Hello world" }]
-}
+```bash
+npm test
+npm run start:api
 ```
 
-响应体：
+## 翻译接口
+
+`POST /v2/translate` 同时接受 JSON 和 `application/x-www-form-urlencoded`。
+
 ```json
-{
-  "request_id": "uuid",
-  "detected_source_lang": "auto",
-  "items": [{ "id": "b1", "translated_text": "你好，世界", "confidence": 0.96 }],
-  "model": "gpt-4o-mini",
-  "latency_ms": 620,
-  "error_code": null
-}
+{ "text": ["Hello"], "target_lang": "ZH" }
 ```
 
-错误码（`error_code`）：
-- `missing_model`：缺少本地模型
-- `timeout`：请求超时
-- `auth_required`：未配置密钥
-- `rate_limited`：触发限流
-- `provider_down`：上游不可用
+```json
+{ "translations": [{ "detected_source_language": "EN", "text": "你好" }] }
+```
 
-管理端点（需 `ADMIN_TOKEN`）：
-- `GET /v1/config`
-- `PUT /v1/config`
-- `GET /v1/models/installed?engine=argos|marian`
-- `GET /v1/models/available?engine=argos|marian`
-- `POST /v1/models/download`
-- `POST /v1/models/remove`
-- `GET /admin`（后台页面）
+`target_lang` 必填，`source_lang` 可省略并自动检测。语言码大小写不敏感，按 DeepL 规范映射（`ZH`、`ZH-HANS`、`ZH-HANT`、`EN-US`、`EN-GB` 等）。其他 DeepL 字段会接受，不会因为不认识而报错。另外提供 `GET /v2/usage` 和 `GET /v2/languages`。
 
-配置文件默认位于 `api/config.json`，可通过后台页面修改并实时生效。
-访问后台页时可附带 `?token=ADMIN_TOKEN`。
+未配置 `DEEPL_AUTH_KEY`（或 `TRANSLATION_API_KEY`）时，`/v2/*` 只允许本机访问。配置之后使用 `Authorization: DeepL-Auth-Key <key>`，也接受 `Bearer` 和 `auth_key`。
 
-## 客户端流程（概览）
+管理页 `http://127.0.0.1:8787/admin` 可以用 `/v2/translate` 试译。模型管理仍走 `/v1/config` 和 `/v1/models/*`。
 
-1. 全局快捷键触发选区层
-2. 本地截图 -> OCR 提取文本块与坐标
-3. 批量调用翻译 API
-4. 译文按块级布局覆盖到原区域
+## 安装包里的翻译服务
 
-## 关键可配置项
+开发时用系统 `node` 和仓库里的 `api/`。
 
-见 `.env.example`：
-- `TRANSLATION_API_URL`：翻译 API 地址
-- `TRANSLATION_ENGINE`：`argos` / `marian`
-- `LLM_API_URL`：桌面端直连 LLM 的 API 基址
-- `LLM_API_KEY`：桌面端直连 LLM 的密钥
-- `LLM_MODEL`：桌面端直连 LLM 的模型名称（默认 `gpt-4o-mini`）
-- `ADMIN_TOKEN`：后台管理鉴权 token
-- `LOCAL_TRANSLATE_MODEL_DIR`：本地翻译模型目录（Argos）
-- `LOCAL_TRANSLATE_VENV`：本地翻译引擎的虚拟环境目录
-- `LOCAL_MARIAN_MODEL_DIR`：本地 Marian 模型目录
-- `MARIAN_MODEL_ID`：默认 Marian / OPUS‑MT 模型 ID
-- `SNAP_TRANSLATE_HOTKEY`：全局快捷键
+发布时 `node scripts/prepare-node-sidecar.js` 会把对应平台的 Node 放到 `desktop/src-tauri/binaries/opentranslate-node-<triple>`。Tauri 把它作为 sidecar 打进安装包，安装后的文件名是 `opentranslate-node`，不会覆盖系统里的 `node`。同时打包 `api/`、`load-env.js`、`desktop/lib/`、Linux OCR 模型和 Vision 的 Swift 源文件。打包后的进程会设置 `SNAP_TRANSLATE_IS_PACKAGED=1`，并在应用数据目录用系统 `python3` 创建 Argos 或 Marian 虚拟环境。只有选择 Marian 时才会安装体积很大的 PyTorch。
 
-## 打包与发布（DMG）
-
-使用 `electron-builder` 生成 DMG：
 ```bash
 npm run dist
 ```
 
-输出目录：`dist/`
+`.github/workflows/release.yml` 在推送 `v*` 标签或手动触发时，用 tauri-action 构建 Windows、macOS arm64、macOS x64 和 Linux 安装包，并上传到草稿 Release。
 
-说明：
-- DMG 仅包含前端，不再内置翻译 API 与 Python 运行时
-- 若使用 API 模式，请单独部署并启动 `api/server.js`
-- 未做签名/公证（本地分发场景）
+## 权限
 
-局域网访问示例：
-```
-http://<本机IP>:8787/v1/translate
-```
-
-## 常见问题
-
-1. 截图失败 / 无法识别文本
-- 检查系统“屏幕录制权限”是否授予给 Electron 进程
-
-2. 翻译失败提示
-- 桌面端直连 LLM 时检查 `.env` 或设置中的 `LLM_API_KEY`
-- `TRANSLATION_ENGINE=argos|marian` 时检查模型是否已在后台下载
-- 检查翻译 API 是否运行
-
-3. 译文位置偏差
-- 当前为块级映射，非像素级复刻
-- 可通过优化 OCR 或布局策略改善
-
-## 设计取舍说明
-
-- API 侧使用本地模型（Argos/Marian），桌面端可选直连 LLM。
-- 版式映射为块级：保证稳定与速度，不做字符级回填。
-
-## 后续可扩展方向
-
-- 多 Provider 路由（专用翻译 API + LLM 兜底）
-- 术语表与行业词库
-- 历史记录与快捷重译
-- 复杂排版识别（表格/公式）
-
-## 运行测试
-
-```bash
-npm test
-```
-
-通过测试表示布局映射与接口契约基本正确。
+macOS 需要屏幕录制权限。Windows 若未安装简体中文 OCR 语言包，中文识别会退回到系统已启用的 OCR 语言。

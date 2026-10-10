@@ -1,0 +1,8 @@
+{
+  "name": "opentranslate",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "tauri": "node ../scripts/run-tauri.js"
+  }
+}

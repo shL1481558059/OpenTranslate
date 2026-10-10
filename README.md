@@ -1,99 +1,82 @@
-# OpenTranslate (Electron for macOS)
+# OpenTranslate
 
-Mac screenshot translate app:
-- Global hotkey trigger
-- Select screen region
-- Local OCR via Apple Vision (Swift script)
-- Built-in local translation API (Argos), auto-started by the desktop app
-- Overlay translated blocks at original positions
+Screenshot translation for macOS, Windows, and Linux. The desktop app is Tauri v2. A bundled Node service speaks the DeepL API v2 translate contract and runs Argos or Marian locally.
 
-## Architecture
+## What it does
 
-- `desktop/`: Electron client
-- `api/`: translation API (`POST /v1/translate`)
-- `desktop/scripts/vision_ocr.swift`: local OCR helper
+- Global shortcut: Command+Shift+T on macOS, Ctrl+Shift+T on Windows and Linux
+- Drag a region or click a window to snap
+- OCR on the captured image, then overlay the translation in place
+- Copy the source or the translation, plus a manual translate window
+- Settings for theme, languages, shortcut, and launch at login
+- Tray icon
 
-## Quick start (dev)
+## Layout
 
-1. Install deps:
-   ```bash
-   npm install
-   ```
-2. Configure env:
-   ```bash
-   cp .env.example .env
-   # set LLM_API_KEY
-   ```
+- `desktop/`: Tauri shell and the existing HTML UI
+- `desktop/src-tauri/`: Rust app, screenshot capture, and OCR
+- `api/`: DeepL-compatible translation service (`POST /v2/translate`)
+- `desktop/src-tauri/models/ocr/`: PP-OCRv4 mobile ONNX models used on Linux
 
-   For local Argos engine:
-   - set `TRANSLATION_ENGINE=local`
-   - put `.argosmodel` files under `models/argos/`
-   - first run will auto-create `./.venv` and install deps
-3. Start desktop app:
-   ```bash
-   export $(grep -v '^#' .env | xargs)
-   npm run start:desktop
-   ```
-4. Press `Command+Shift+T`, drag to select area.
+## OCR
 
-Optional: run API service standalone for debugging
+| Platform | Engine |
+| --- | --- |
+| macOS | Apple Vision, compiled once with `swiftc` |
+| Windows | `Windows.Media.Ocr` (Simplified Chinese, then English, then the user language) |
+| Linux | PP-OCRv4 mobile detection + recognition ONNX via ONNX Runtime |
+
+Linux recognition of a normal selection is well under a second after the model is loaded (about 60–80 ms on an x64 VM, plus about 150 ms the first time). The ONNX files are about 15 MB.
+
+## Develop
+
+Requirements: Node.js 20+, Rust stable, and the Tauri system packages for your OS. Linux OCR also needs the ONNX models in `desktop/src-tauri/models/ocr/` (`node scripts/prepare-ocr-models.js` downloads them).
+
 ```bash
-export $(grep -v '^#' .env | xargs)
+npm install
+cp .env.example .env
+npm run start:desktop
+```
+
+`npm run start:desktop` serves the UI and starts the Tauri shell. The shell starts `api/server.js` with the system Node binary. Environment variables in `.env` override `api/config.json`.
+
+For Argos, set `TRANSLATION_ENGINE=argos`, put `.argosmodel` files in `models/argos/`, and let the first request create `./.venv`. Marian is selected with `TRANSLATION_ENGINE=marian`.
+
+```bash
+npm test
 npm run start:api
 ```
 
-## API contract
+## Translation API
 
-`POST /v1/translate`
+`POST /v2/translate` accepts JSON and `application/x-www-form-urlencoded`.
 
-Request:
 ```json
-{
-  "request_id": "uuid",
-  "source_lang": "auto",
-  "target_lang": "zh-CN",
-  "items": [{ "id": "b1", "text": "Hello world" }]
-}
+{ "text": ["Hello"], "target_lang": "ZH" }
 ```
 
-Response:
 ```json
-{
-  "request_id": "uuid",
-  "detected_source_lang": "auto",
-  "items": [{ "id": "b1", "translated_text": "你好，世界", "confidence": 0.96 }],
-  "model": "gpt-4o-mini",
-  "latency_ms": 620,
-  "error_code": null
-}
+{ "translations": [{ "detected_source_language": "EN", "text": "你好" }] }
 ```
 
-## Notes
+`target_lang` is required. `source_lang` is optional and language codes are case-insensitive (`ZH`, `ZH-HANS`, `ZH-HANT`, `EN-US`, `EN-GB`, and the other DeepL codes). Extra DeepL fields are accepted. `GET /v2/usage` and `GET /v2/languages` are included.
 
-- Grant screen recording permission to the app process if screenshot capture fails.
-- OCR is block-level for layout mapping; not pixel-perfect typography replacement.
-- This version supports LLM or local Argos Translate.
+If `DEEPL_AUTH_KEY` (or `TRANSLATION_API_KEY`) is empty, only loopback clients may call `/v2/*`. Otherwise send `Authorization: DeepL-Auth-Key <key>`. `Authorization: Bearer <key>` and `auth_key` are also accepted.
 
-## Packaging (DMG)
+The admin UI at `http://127.0.0.1:8787/admin` can try `/v2/translate` and still manages Argos and Marian models through `/v1/config` and `/v1/models/*`.
 
-Build DMG with electron-builder:
+## How the API is packaged
+
+Development uses the system `node` executable and the repository `api/` tree.
+
+Release builds download a Node binary into `desktop/src-tauri/binaries/opentranslate-node-<target>` (`node scripts/prepare-node-sidecar.js`) and Tauri ships it as an external sidecar named `opentranslate-node`, so the package does not replace a system `node` binary. The installer also contains `api/`, `load-env.js`, `desktop/lib/`, the Linux OCR models, and the Apple Vision Swift source. On first launch the packaged app sets `SNAP_TRANSLATE_IS_PACKAGED=1` and creates the Argos or Marian virtualenv under the app data directory, using the system `python3`. PyTorch is only installed when Marian is selected, because that dependency is large.
+
 ```bash
 npm run dist
 ```
 
-Notes:
-- Desktop app auto-starts the local API.
-- First launch downloads Argos model (network required).
-- Model path: `app.getPath('userData')/models/argos`.
-- No code signing / notarization by default.
+GitHub Actions (`.github/workflows/release.yml`) builds Windows, macOS arm64, macOS x64, and Linux installers when a `v*` tag is pushed or the workflow is run manually. Artifacts are uploaded to a draft release.
 
-## Settings additions
+## Permissions
 
-- LAN access toggle (binds API to `0.0.0.0`)
-- API port (default `8787`)
-- Translation API URL is kept as `http://127.0.0.1:${port}/v1/translate`
-
-LAN access example:
-```
-http://<host-ip>:<port>/v1/translate
-```
+macOS needs Screen Recording. Window snapping uses the window list from the capture API. OCR language data for Windows must be installed in the system OCR languages if Simplified Chinese is not already present.

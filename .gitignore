@@ -41,11 +41,13 @@ tmp/
 temp/
 
 # Project-specific
-models/
+/models/
 models/argos/*.argosmodel
 api/marian_models.json
 api/model-cache.json
 api/usage.json
 desktop/src-tauri/target/
 desktop/src-tauri/binaries/
+desktop/src-tauri/gen/
+desktop/src-tauri/ocr-engine/target/
 desktop/ui/vendor/

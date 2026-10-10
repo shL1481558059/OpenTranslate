@@ -1,6 +1,6 @@
-import { setBasePath } from '../../node_modules/@awesome.me/webawesome/dist-cdn/webawesome.js';
+import { setBasePath } from './vendor/webawesome/webawesome.js';
 
-const basePath = new URL('../../node_modules/@awesome.me/webawesome/dist-cdn/', import.meta.url).href;
+const basePath = new URL('./vendor/webawesome/', import.meta.url).href;
 setBasePath(basePath);
 
-await import('../../node_modules/@awesome.me/webawesome/dist-cdn/components/icon/icon.js');
+await import('./vendor/webawesome/components/icon/icon.js');

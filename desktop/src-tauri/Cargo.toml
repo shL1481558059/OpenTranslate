@@ -1,0 +1,36 @@
+[workspace]
+members = [".", "ocr-engine"]
+resolver = "2"
+
+[package]
+name = "opentranslate"
+version = "0.1.0"
+description = "OpenTranslate desktop"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "opentranslate_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+arboard = "3"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ocr-engine = { path = "ocr-engine" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-shell = "2"
+tokio = { version = "1", features = ["time", "macros"] }
+xcap = "0.6"
+
+[profile.release]
+lto = false
+codegen-units = 8
