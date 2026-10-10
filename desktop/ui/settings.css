@@ -7,15 +7,82 @@ body.page-settings-body {
   display: block;
   height: 100vh;
   min-height: 0;
+  max-width: none;
+  padding: calc(14px + var(--titlebar-offset)) 0 48px;
   overflow-x: hidden;
   overflow-y: auto;
 }
 
 .page-settings .shell {
-  max-width: 720px;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 0 32px;
+  gap: 22px;
+}
+
+.page-settings .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 4px 0 16px;
+  background: linear-gradient(var(--bg) 82%, transparent);
+}
+
+.page-settings .lede {
+  margin-top: -4px;
 }
 
 .page-settings form {
   display: grid;
+  gap: 0;
+}
+
+.page-settings .panel {
+  gap: 18px;
+  padding: 24px 0 28px;
+  border-top: 1px solid var(--border);
+}
+
+.page-settings .panel:first-of-type {
+  padding-top: 4px;
+  border-top: 0;
+}
+
+.page-settings .panel-head {
+  gap: 6px;
+}
+
+.page-settings .stack {
+  gap: 16px;
+}
+
+.page-settings .field {
   gap: 8px;
+}
+
+.page-settings .secret-row {
+  align-items: center;
+}
+
+.page-settings .inline-feedback {
+  gap: 12px;
+  align-items: center;
+}
+
+.page-settings .note {
+  margin: 0;
+}
+
+.page-settings .check {
+  gap: 10px;
+}
+
+.page-settings .toggle-actions {
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .page-settings .shell {
+    padding: 0 18px;
+  }
 }

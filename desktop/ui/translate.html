@@ -6,8 +6,8 @@
     <title>手动翻译</title>
     <script src="./theme-bootstrap.js?v=2"></script>
     <script src="./tauri-bridge.js"></script>
-    <link rel="stylesheet" href="./theme.css?v=6" />
-    <link rel="stylesheet" href="./translate.css?v=6" />
+    <link rel="stylesheet" href="./theme.css?v=9" />
+    <link rel="stylesheet" href="./translate.css?v=9" />
   </head>
   <body>
     <div class="window-drag-region" aria-hidden="true"></div>
@@ -42,14 +42,18 @@
         </section>
 
         <section class="editors">
-          <label class="editor">
-            <span>原文</span>
+          <div class="editor-card">
+            <div class="editor-head">
+              <span class="editor-label">原文</span>
+            </div>
             <textarea id="input" rows="12" placeholder="输入或粘贴要翻译的文本"></textarea>
-          </label>
-          <label class="editor">
-            <span>译文</span>
+          </div>
+          <div class="editor-card">
+            <div class="editor-head">
+              <span class="editor-label">译文</span>
+            </div>
             <textarea id="output" rows="12" readonly placeholder="译文会显示在这里"></textarea>
-          </label>
+          </div>
         </section>
       </section>
     </main>
