@@ -1,6 +1,5 @@
 use super::{BBox, OcrBlock, OcrOutput};
 use image::RgbaImage;
-use pollster::block_on;
 use windows::core::HSTRING;
 use windows::Globalization::Language;
 use windows::Graphics::Imaging::{BitmapDecoder, BitmapPixelFormat};
@@ -8,10 +7,6 @@ use windows::Media::Ocr::OcrEngine;
 use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
 
 pub fn recognize(image: &RgbaImage) -> Result<OcrOutput, String> {
-    block_on(recognize_async(image))
-}
-
-async fn recognize_async(image: &RgbaImage) -> Result<OcrOutput, String> {
     let mut png = Vec::new();
     {
         let mut cursor = std::io::Cursor::new(&mut png);
@@ -22,24 +17,31 @@ async fn recognize_async(image: &RgbaImage) -> Result<OcrOutput, String> {
     let stream = InMemoryRandomAccessStream::new().map_err(|error| error.to_string())?;
     let writer = DataWriter::CreateDataWriter(&stream).map_err(|error| error.to_string())?;
     writer.WriteBytes(&png).map_err(|error| error.to_string())?;
-    writer.StoreAsync().map_err(|error| error.to_string())?.await.map_err(|error| error.to_string())?;
+    // windows 0.61 does not implement Future for IAsyncOperation unless
+    // windows-future is built with its std feature. get() waits inline.
+    writer
+        .StoreAsync()
+        .map_err(|error| error.to_string())?
+        .get()
+        .map_err(|error| error.to_string())?;
     writer.DetachStream().map_err(|error| error.to_string())?;
     stream.Seek(0).map_err(|error| error.to_string())?;
     let decoder = BitmapDecoder::CreateAsync(&stream)
         .map_err(|error| error.to_string())?
-        .await
+        .get()
         .map_err(|error| error.to_string())?;
     let bitmap = decoder
         .GetSoftwareBitmapAsync()
         .map_err(|error| error.to_string())?
-        .await
+        .get()
         .map_err(|error| error.to_string())?;
     let _ = BitmapPixelFormat::Bgra8;
-    let engine = ocr_engine().map_err(|error| format!("Windows.Media.Ocr is unavailable: {error}"))?;
+    let engine =
+        ocr_engine().map_err(|error| format!("Windows.Media.Ocr is unavailable: {error}"))?;
     let result = engine
         .RecognizeAsync(&bitmap)
         .map_err(|error| error.to_string())?
-        .await
+        .get()
         .map_err(|error| error.to_string())?;
     let lines = result.Lines().map_err(|error| error.to_string())?;
     let mut blocks = Vec::new();
@@ -58,10 +60,10 @@ async fn recognize_async(image: &RgbaImage) -> Result<OcrOutput, String> {
         for word_index in 0..count {
             if let Ok(word) = words.GetAt(word_index) {
                 if let Ok(rect) = word.BoundingRect() {
-                    min_x = min_x.min(rect.X);
-                    min_y = min_y.min(rect.Y);
-                    max_x = max_x.max(rect.X + rect.Width);
-                    max_y = max_y.max(rect.Y + rect.Height);
+                    min_x = min_x.min(rect.X.round() as i32);
+                    min_y = min_y.min(rect.Y.round() as i32);
+                    max_x = max_x.max((rect.X + rect.Width).round() as i32);
+                    max_y = max_y.max((rect.Y + rect.Height).round() as i32);
                 }
             }
         }

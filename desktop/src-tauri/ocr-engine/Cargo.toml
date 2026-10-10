@@ -19,7 +19,6 @@ ort = { version = "2.0.0-rc.10", features = ["download-binaries", "copy-dylibs",
 ndarray = "0.17"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-pollster = "0.4"
 windows = { version = "0.61", features = [
   "Foundation",
   "Globalization",
