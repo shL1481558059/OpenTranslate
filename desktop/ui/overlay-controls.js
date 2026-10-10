@@ -8,7 +8,13 @@ window.snapTranslate.onOverlayControlsRender((payload) => {
   document.documentElement.dataset.controlSide = payload?.side || 'top';
 });
 
-closeBtn.addEventListener('click', closeOverlay);
+closeBtn.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  closeOverlay();
+});
 
 window.addEventListener('keydown', async function handleKeydown(event) {
   if (event.key === 'Escape') {

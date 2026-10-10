@@ -2,7 +2,7 @@ use image::{imageops::crop_imm, Rgba, RgbaImage};
 use serde::Serialize;
 use xcap::{Monitor, Window};
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -102,8 +102,30 @@ fn point_inside(x: i32, y: i32, rect: Rect) -> bool {
     x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CssRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+pub fn css_to_screen(origin_x: i32, origin_y: i32, scale: f64, css: CssRect) -> Rect {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    Rect {
+        x: origin_x.saturating_add((css.x * scale).round() as i32),
+        y: origin_y.saturating_add((css.y * scale).round() as i32),
+        width: (css.width * scale).round().max(1.0) as i32,
+        height: (css.height * scale).round().max(1.0) as i32,
+    }
+}
+
 pub fn hits_control(x: i32, y: i32, rect: Rect) -> bool {
-    const PAD: i32 = 8;
+    const PAD: i32 = 14;
     x >= rect.x.saturating_sub(PAD)
         && y >= rect.y.saturating_sub(PAD)
         && x < rect.x + rect.width + PAD
@@ -126,6 +148,28 @@ mod tests {
         assert!(hits_control(394, 78, rect));
         assert!(!hits_control(200, 200, rect));
         assert!(!hits_control(700, 90, rect));
+    }
+
+    #[test]
+    fn visible_toolbar_tracks_the_webview_frame() {
+        let css = CssRect {
+            x: 810.0,
+            y: 235.0,
+            width: 96.0,
+            height: 36.0,
+        };
+        let screen = css_to_screen(0, 29, 1.0, css);
+        assert_eq!(
+            screen,
+            Rect {
+                x: 810,
+                y: 264,
+                width: 96,
+                height: 36
+            }
+        );
+        assert!(hits_control(850, 280, screen));
+        assert!(!hits_control(400, 280, screen));
     }
 }
 

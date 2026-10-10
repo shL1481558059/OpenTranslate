@@ -1,45 +1,27 @@
-.language-grid,
-.editor-grid {
+.page-translate .editors {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  gap: 14px;
-}
-
-.language-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
 }
 
-.editor-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  min-height: 0;
-}
-
-.editor-grid wa-textarea {
-  min-height: 0;
-}
-
-.editor-grid wa-textarea::part(form-control) {
+.page-translate .editor textarea {
+  min-height: 320px;
   height: 100%;
 }
 
-.editor-grid wa-textarea::part(base) {
-  min-height: 360px;
-}
-
-.editor-grid wa-textarea::part(textarea) {
-  min-height: 300px;
+.page-translate .shell {
+  flex: 1 0 auto;
+  min-height: 100%;
 }
 
 @media (max-width: 760px) {
-  .language-grid,
-  .editor-grid {
+  .page-translate .editors {
     grid-template-columns: 1fr;
   }
 
-  .editor-grid wa-textarea::part(base) {
-    min-height: 260px;
-  }
-
-  .editor-grid wa-textarea::part(textarea) {
-    min-height: 220px;
+  .page-translate .editor textarea {
+    min-height: 180px;
   }
 }

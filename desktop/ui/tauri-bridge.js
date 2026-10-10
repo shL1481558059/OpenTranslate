@@ -38,6 +38,9 @@
     closeOverlay() {
       return tauri.core.invoke('overlay_close');
     },
+    setOverlayHitRect(rect) {
+      return tauri.core.invoke('overlay_set_hit_rect', { rect });
+    },
     writeClipboardText(text) {
       return tauri.core.invoke('clipboard_write_text', { text });
     },

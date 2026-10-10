@@ -100,6 +100,9 @@ pub async fn run(app: AppHandle, rect: Rect) {
         recognized.image_width,
         recognized.image_height
     );
+    for block in &recognized.blocks {
+        eprintln!("[ocr] {}", block.text.replace('\n', " / "));
+    }
     let kept = recognized
         .blocks
         .iter()
@@ -194,10 +197,9 @@ pub async fn run(app: AppHandle, rect: Rect) {
     emit_overlay(&app, laid_out);
 }
 
-fn reveal_overlay(app: &AppHandle, host: Rect) {
+fn reveal_overlay(app: &AppHandle, _host: Rect) {
     if let Some(window) = app.get_webview_window("overlay") {
         let _ = window.show();
-        crate::align_shown_window(&window, host);
         let _ = window.set_ignore_cursor_events(true);
     }
     crate::set_overlay_visible(app, true);
@@ -464,57 +466,27 @@ fn remember_controls(app: &AppHandle, payload: &Value) {
     let Some(control) = payload.get("controlRect") else {
         return;
     };
-    let mut origin_x = payload
-        .get("overlayBounds")
-        .and_then(|value| value.get("x"))
+    let width = control
+        .get("width")
         .and_then(|value| value.as_f64())
         .unwrap_or(0.0);
-    let mut origin_y = payload
-        .get("overlayBounds")
-        .and_then(|value| value.get("y"))
+    let height = control
+        .get("height")
         .and_then(|value| value.as_f64())
         .unwrap_or(0.0);
-    if let Some(window) = app.get_webview_window("overlay") {
-        if let Ok(origin) = window.inner_position() {
-            origin_x = origin.x as f64;
-            origin_y = origin.y as f64;
-        }
+    if width < 1.0 || height < 1.0 {
+        crate::set_overlay_control(app, None);
+        return;
     }
-    let scale = app
-        .get_webview_window("overlay")
-        .and_then(|window| window.scale_factor().ok())
-        .unwrap_or(1.0);
-    let rect = Rect {
-        x: (origin_x
-            + control
-                .get("x")
-                .and_then(|value| value.as_f64())
-                .unwrap_or(0.0)
-                * scale)
-            .round() as i32,
-        y: (origin_y
-            + control
-                .get("y")
-                .and_then(|value| value.as_f64())
-                .unwrap_or(0.0)
-                * scale)
-            .round() as i32,
-        width: (control
-            .get("width")
-            .and_then(|value| value.as_f64())
-            .unwrap_or(0.0)
-            * scale)
-            .round()
-            .max(1.0) as i32,
-        height: (control
-            .get("height")
-            .and_then(|value| value.as_f64())
-            .unwrap_or(0.0)
-            * scale)
-            .round()
-            .max(1.0) as i32,
-    };
-    crate::set_overlay_control(app, Some(rect));
+    crate::set_overlay_control(
+        app,
+        Some(crate::capture::CssRect {
+            x: control.get("x").and_then(|value| value.as_f64()).unwrap_or(0.0),
+            y: control.get("y").and_then(|value| value.as_f64()).unwrap_or(0.0),
+            width,
+            height,
+        }),
+    );
 }
 
 #[cfg(test)]

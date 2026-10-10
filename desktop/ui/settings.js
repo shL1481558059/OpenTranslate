@@ -1,5 +1,5 @@
 import { applyThemePreference, normalizeThemePreference } from './theme.js';
-import './webawesome.js';
+import { languageOptions } from './languages.mjs';
 import { initPageTransition, navigateWithTransition } from './page-transition.js';
 
 const formEl = document.getElementById('settingsForm');
@@ -12,7 +12,11 @@ const apiKeyEl = document.getElementById('apiKey');
 const modelEl = document.getElementById('model');
 const promptEl = document.getElementById('prompt');
 const openaiFieldsEl = document.getElementById('openaiFields');
+const baseUrlHintEl = document.getElementById('baseUrlHint');
+const apiKeyHintEl = document.getElementById('apiKeyHint');
+const apiKeyToggle = document.getElementById('apiKeyToggle');
 const testBtn = document.getElementById('testBtn');
+const testStatusEl = document.getElementById('testStatus');
 const hotkeyEl = document.getElementById('hotkey');
 const statusEl = document.getElementById('status');
 const backBtn = document.getElementById('backBtn');
@@ -21,10 +25,6 @@ const launchAtLoginEl = document.getElementById('launchAtLogin');
 const launchAtLoginHelpEl = document.getElementById('launchAtLoginHelp');
 const repairLaunchAtLoginBtn = document.getElementById('repairLaunchAtLoginBtn');
 const moveToApplicationsBtn = document.getElementById('moveToApplicationsBtn');
-const STATUS_VARIANTS = {
-  error: 'danger',
-  success: 'success'
-};
 const HOTKEY_ERROR_MESSAGES = {
   hotkey_requires_modifier: '请使用组合键（至少包含 Command / Control / Alt / Shift）。',
   hotkey_register_failed: '系统未能注册该快捷键，请更换后重试。',
@@ -81,21 +81,53 @@ const PROVIDER_FIELDS = {
 let hotkeyBinding = false;
 let launchAtLoginState = null;
 
-function getStatusVariant(type) {
-  return STATUS_VARIANTS[type] || 'neutral';
+function setNote(el, message, type) {
+  if (!el) {
+    return;
+  }
+  if (!message) {
+    el.hidden = true;
+    el.textContent = '';
+    delete el.dataset.tone;
+    return;
+  }
+  el.hidden = false;
+  el.textContent = message;
+  el.dataset.tone = type || 'neutral';
 }
 
 function setStatus(message, type) {
-  if (!message) {
-    statusEl.hidden = true;
-    statusEl.textContent = '';
-    statusEl.variant = 'neutral';
+  setNote(statusEl, message, type);
+}
+
+function setTestStatus(message, type) {
+  setNote(testStatusEl, message, type);
+}
+
+function setBusy(button, busy) {
+  if (!button) {
     return;
   }
+  button.disabled = busy;
+  if (busy) {
+    button.dataset.loading = 'true';
+  } else {
+    delete button.dataset.loading;
+  }
+}
 
-  statusEl.hidden = false;
-  statusEl.textContent = message;
-  statusEl.variant = getStatusVariant(type);
+function fillLanguageSelect(select, options, selected, fallback) {
+  const known = new Set(options.map((item) => item.value));
+  const items = known.has(selected) || !selected ? options : [...options, { value: selected, label: selected }];
+  select.replaceChildren();
+  for (const item of items) {
+    const option = document.createElement('option');
+    option.value = item.value;
+    option.textContent = item.label;
+    select.appendChild(option);
+  }
+  const next = items.some((item) => item.value === selected) ? selected : fallback;
+  select.value = next;
 }
 
 function isHotkeyError(errorCode) {
@@ -187,8 +219,12 @@ function updateProviderFields() {
   const provider = currentProvider();
   const fields = PROVIDER_FIELDS[provider];
   baseUrlEl.placeholder = fields.placeholder;
-  baseUrlEl.hint = fields.hint;
-  apiKeyEl.hint = fields.key;
+  if (baseUrlHintEl) {
+    baseUrlHintEl.textContent = fields.hint;
+  }
+  if (apiKeyHintEl) {
+    apiKeyHintEl.textContent = fields.key;
+  }
   openaiFieldsEl.hidden = provider !== 'openai';
 }
 
@@ -258,8 +294,8 @@ async function loadSettings() {
     const settings = await window.snapTranslate.getSettings();
     providerEl.value = settings.provider || 'deepl';
     themeEl.value = normalizeThemePreference(settings.theme);
-    sourceLangEl.value = settings.sourceLang || 'auto';
-    targetLangEl.value = settings.targetLang || 'zh-CN';
+    fillLanguageSelect(sourceLangEl, languageOptions({ includeAuto: true }), settings.sourceLang || 'auto', 'auto');
+    fillLanguageSelect(targetLangEl, languageOptions({ includeAuto: false }), settings.targetLang || 'zh-CN', 'zh-CN');
     baseUrlEl.value = settings.baseUrl || '';
     apiKeyEl.value = settings.apiKey || '';
     modelEl.value = settings.model || 'gpt-4o-mini';
@@ -272,6 +308,8 @@ async function loadSettings() {
       setStatus('尚未配置翻译接口。填写类型、Base URL 和 API Key 后可以测试连接。');
     }
   } catch (error) {
+    fillLanguageSelect(sourceLangEl, languageOptions({ includeAuto: true }), 'auto', 'auto');
+    fillLanguageSelect(targetLangEl, languageOptions({ includeAuto: false }), 'zh-CN', 'zh-CN');
     setStatus('加载设置失败。', 'error');
   }
 }
@@ -289,7 +327,7 @@ launchAtLoginEl.addEventListener('change', () => {
 
 formEl.addEventListener('submit', async (event) => {
   event.preventDefault();
-  saveBtn.loading = true;
+  setBusy(saveBtn, true);
   setStatus('保存中…');
 
   try {
@@ -305,7 +343,7 @@ formEl.addEventListener('submit', async (event) => {
   } catch (error) {
     setStatus(`保存失败：${getActionErrorMessage(error)}`, 'error');
   } finally {
-    saveBtn.loading = false;
+    setBusy(saveBtn, false);
   }
 });
 
@@ -365,7 +403,7 @@ repairLaunchAtLoginBtn?.addEventListener('click', async () => {
     return;
   }
 
-  repairLaunchAtLoginBtn.loading = true;
+  setBusy(repairLaunchAtLoginBtn, true);
   setStatus('正在修复开机自启…');
 
   try {
@@ -380,7 +418,7 @@ repairLaunchAtLoginBtn?.addEventListener('click', async () => {
   } catch (error) {
     setStatus(`修复失败：${getActionErrorMessage(error)}`, 'error');
   } finally {
-    repairLaunchAtLoginBtn.loading = false;
+    setBusy(repairLaunchAtLoginBtn, false);
   }
 });
 
@@ -390,7 +428,7 @@ moveToApplicationsBtn?.addEventListener('click', async () => {
     return;
   }
 
-  moveToApplicationsBtn.loading = true;
+  setBusy(moveToApplicationsBtn, true);
 
   try {
     const result = await window.snapTranslate.moveToApplicationsFolder();
@@ -413,7 +451,7 @@ moveToApplicationsBtn?.addEventListener('click', async () => {
   } catch (error) {
     setStatus(`移动失败：${getActionErrorMessage(error)}`, 'error');
   } finally {
-    moveToApplicationsBtn.loading = false;
+    setBusy(moveToApplicationsBtn, false);
   }
 });
 
@@ -427,21 +465,27 @@ testBtn?.addEventListener('click', async () => {
     return;
   }
 
-  testBtn.loading = true;
-  setStatus('正在测试连接…');
+  setBusy(testBtn, true);
+  setTestStatus('正在测试连接…');
 
   try {
     const result = await window.snapTranslate.testTranslation(currentPayload());
     if (!result?.ok) {
-      setStatus(result?.error || '连接失败。', 'error');
+      setTestStatus(result?.error || '连接失败。', 'error');
       return;
     }
-    setStatus(result.message || '连接成功。', 'success');
+    setTestStatus(result.message || '连接成功。', 'success');
   } catch (error) {
-    setStatus(`连接失败：${getActionErrorMessage(error)}`, 'error');
+    setTestStatus(`连接失败：${getActionErrorMessage(error)}`, 'error');
   } finally {
-    testBtn.loading = false;
+    setBusy(testBtn, false);
   }
+});
+
+apiKeyToggle?.addEventListener('click', () => {
+  const show = apiKeyEl.type === 'password';
+  apiKeyEl.type = show ? 'text' : 'password';
+  apiKeyToggle.textContent = show ? '隐藏' : '显示';
 });
 
 loadSettings();

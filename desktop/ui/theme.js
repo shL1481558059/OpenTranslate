@@ -29,8 +29,7 @@ function persistThemePreference(preference) {
 
 function setThemeRootState(mode, preference) {
   const isDark = mode === 'dark';
-  root.classList.toggle('wa-dark', isDark);
-  root.classList.toggle('wa-light', !isDark);
+  root.classList.remove('wa-dark', 'wa-light');
   root.style.colorScheme = mode;
   root.dataset.theme = mode;
   root.dataset.themePreference = preference;

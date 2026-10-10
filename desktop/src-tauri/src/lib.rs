@@ -25,14 +25,14 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
 
-use capture::Rect;
+use capture::{CssRect, Rect};
 use settings::Settings;
 
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub ready: Mutex<HashSet<String>>,
     pub selecting: AtomicBool,
-    pub overlay_control: Mutex<Option<Rect>>,
+    pub overlay_control: Mutex<Option<CssRect>>,
     pub overlay_visible: AtomicBool,
 }
 
@@ -116,6 +116,7 @@ pub fn run() {
             selection_complete,
             selection_cancel,
             overlay_close,
+            overlay_set_hit_rect,
             overlay_set_ignore_mouse,
             overlay_metrics,
             settings_get,
@@ -164,7 +165,7 @@ fn settings_path(app: &AppHandle) -> std::path::PathBuf {
 fn install_tray(app: &AppHandle) -> Result<(), String> {
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../assets/tray-template-18.png"))
         .map_err(|error| error.to_string())?;
-    let translate = MenuItem::with_id(app, "translate", "手动翻译", true, None::<&str>)
+    let translate = MenuItem::with_id(app, "translate", "打开翻译", true, None::<&str>)
         .map_err(|error| error.to_string())?;
     let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)
         .map_err(|error| error.to_string())?;
@@ -247,19 +248,38 @@ fn open_selection(app: &AppHandle) {
         let _ = window.set_focus();
     }
     let windows = capture::list_windows(host);
-    let payload = json!({
-        "windows": windows,
-        "displayBounds": host,
-        "requiresAccessibility": false,
-        "requiresScreenRecording": false
-    });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         wait_for_label(&app, "selection").await;
-        if let Some(window) = app.get_webview_window("selection") {
-            let _ = window.emit("selection-windows", payload);
+        emit_selection_windows(&app, host, &windows);
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        if app.state::<AppState>().selecting.load(Ordering::SeqCst) {
+            emit_selection_windows(&app, host, &windows);
         }
     });
+}
+
+fn emit_selection_windows(app: &AppHandle, host: Rect, windows: &[capture::SnapWindow]) {
+    let Some(window) = app.get_webview_window("selection") else {
+        return;
+    };
+    let origin = window
+        .inner_position()
+        .unwrap_or(PhysicalPosition::new(host.x, host.y));
+    eprintln!(
+        "[selection] webview origin {},{} host {},{}",
+        origin.x, origin.y, host.x, host.y
+    );
+    let _ = window.emit(
+        "selection-windows",
+        json!({
+            "windows": windows,
+            "displayBounds": host,
+            "webviewOrigin": { "x": origin.x, "y": origin.y },
+            "requiresAccessibility": false,
+            "requiresScreenRecording": false
+        }),
+    );
 }
 
 fn dismiss_overlay(app: &AppHandle) {
@@ -278,7 +298,7 @@ pub(crate) fn set_overlay_visible(app: &AppHandle, visible: bool) {
         .store(visible, Ordering::SeqCst);
 }
 
-pub(crate) fn set_overlay_control(app: &AppHandle, rect: Option<Rect>) {
+pub(crate) fn set_overlay_control(app: &AppHandle, rect: Option<CssRect>) {
     if let Ok(mut guard) = app.state::<AppState>().overlay_control.lock() {
         *guard = rect;
     }
@@ -318,11 +338,20 @@ fn pointer_over_controls(app: &AppHandle) -> bool {
     let Some((x, y)) = cursor::cursor_position() else {
         return false;
     };
+    let Some(window) = app.get_webview_window("overlay") else {
+        return false;
+    };
+    let Ok(origin) = window.inner_position() else {
+        return false;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
     let state = app.state::<AppState>();
     let Ok(guard) = state.overlay_control.lock() else {
         return false;
     };
-    guard.is_some_and(|rect| capture::hits_control(x, y, rect))
+    guard.is_some_and(|css| {
+        capture::hits_control(x, y, capture::css_to_screen(origin.x, origin.y, scale, css))
+    })
 }
 
 fn close_selection(app: &AppHandle) {
@@ -367,38 +396,9 @@ pub fn place_window(app: &AppHandle, label: &str, rect: Rect) {
             rect.width.max(1) as u32,
             rect.height.max(1) as u32,
         )));
-        // Some window managers report a frame offset after the first move.
-        // Shift by that delta so the webview origin matches the monitor origin
-        // and translated boxes sit on the captured text.
-        if let Ok(actual) = window.outer_position() {
-            let dx = rect.x - actual.x;
-            let dy = rect.y - actual.y;
-            if dx != 0 || dy != 0 {
-                let _ = window.set_position(Position::Physical(PhysicalPosition::new(
-                    rect.x + dx,
-                    rect.y + dy,
-                )));
-            }
-        }
+        // Leave the window where the window manager places it. A top panel can
+        // clamp y, and pushing back by that delta makes the origin jump.
         let _ = window.set_always_on_top(true);
-        align_shown_window(&window, rect);
-    }
-}
-
-pub(crate) fn align_shown_window(window: &WebviewWindow, rect: Rect) {
-    for _ in 0..3 {
-        let Ok(actual) = window.outer_position() else {
-            return;
-        };
-        let dx = rect.x - actual.x;
-        let dy = rect.y - actual.y;
-        if dx == 0 && dy == 0 {
-            return;
-        }
-        let _ = window.set_position(Position::Physical(PhysicalPosition::new(
-            rect.x + dx,
-            rect.y + dy,
-        )));
     }
 }
 
@@ -509,7 +509,7 @@ fn resolve_selection(input: &SelectionInput) -> Option<Rect> {
         } else {
             None
         }
-    } else if rect.width > 6 && rect.height > 6 {
+    } else if rect.width >= 6 && rect.height >= 6 {
         Some(rect)
     } else {
         None
@@ -519,9 +519,17 @@ fn resolve_selection(input: &SelectionInput) -> Option<Rect> {
 #[tauri::command]
 async fn selection_complete(app: AppHandle, rect: SelectionInput) {
     let Some(target) = resolve_selection(&rect) else {
+        eprintln!(
+            "[selection] ignored {:.1}x{:.1} click={}",
+            rect.width, rect.height, rect.click
+        );
         close_selection(&app);
         return;
     };
+    eprintln!(
+        "[selection] use {}x{} @ {},{}",
+        target.width, target.height, target.x, target.y
+    );
     if let Some(window) = app.get_webview_window("selection") {
         let _ = window.hide();
     }
@@ -536,6 +544,36 @@ fn selection_cancel(app: AppHandle) {
 #[tauri::command]
 fn overlay_close(app: AppHandle) {
     dismiss_overlay(&app);
+}
+
+#[derive(Deserialize)]
+struct HitRectInput {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[tauri::command]
+fn overlay_set_hit_rect(app: AppHandle, rect: Option<HitRectInput>) {
+    let Some(rect) = rect else {
+        set_overlay_control(&app, None);
+        return;
+    };
+    if !rect.width.is_finite() || !rect.height.is_finite() || rect.width < 1.0 || rect.height < 1.0
+    {
+        set_overlay_control(&app, None);
+        return;
+    }
+    set_overlay_control(
+        &app,
+        Some(CssRect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        }),
+    );
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -776,5 +814,40 @@ fn clipboard_write_text(text: String) -> bool {
 fn ui_listener_ready(window: WebviewWindow, state: tauri::State<'_, AppState>) {
     if let Ok(mut ready) = state.ready.lock() {
         ready.insert(window.label().to_string());
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn input(width: f64, height: f64, click: bool) -> SelectionInput {
+        SelectionInput {
+            x: 10.0,
+            y: 20.0,
+            width,
+            height,
+            click,
+            snapped: None,
+        }
+    }
+
+    #[test]
+    fn drag_of_exactly_six_pixels_is_kept() {
+        let rect = resolve_selection(&input(6.0, 48.0, false));
+        assert_eq!(
+            rect,
+            Some(Rect {
+                x: 10,
+                y: 20,
+                width: 6,
+                height: 48
+            })
+        );
+    }
+
+    #[test]
+    fn smaller_drag_is_dropped() {
+        assert!(resolve_selection(&input(5.0, 80.0, false)).is_none());
     }
 }

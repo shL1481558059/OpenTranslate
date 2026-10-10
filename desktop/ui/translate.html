@@ -1,75 +1,58 @@
 <!doctype html>
-<html lang="zh-CN" class="wa-theme-default wa-brand-indigo">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Manual Translate</title>
-    <script src="./theme-bootstrap.js?v=1"></script>
+    <title>手动翻译</title>
+    <script src="./theme-bootstrap.js?v=2"></script>
     <script src="./tauri-bridge.js"></script>
-    <link rel="stylesheet" href="./vendor/webawesome/styles/webawesome.css" />
-    <link rel="stylesheet" href="./theme.css?v=4" />
-    <link rel="stylesheet" href="./translate.css?v=5" />
+    <link rel="stylesheet" href="./theme.css?v=6" />
+    <link rel="stylesheet" href="./translate.css?v=6" />
   </head>
   <body>
     <div class="window-drag-region" aria-hidden="true"></div>
-    <main class="page page-translate">
+    <main class="app page-translate">
       <section class="shell">
-        <header class="shell-header">
-          <div class="shell-copy">
-            <h1>手动翻译</h1>
-            <p>把文本粘贴进来直接翻译，输入和结果并排放，操作尽量一步到位。</p>
+        <header class="topbar">
+          <div class="brand">
+            <span class="mark" aria-hidden="true"></span>
+            <div>
+              <p class="kicker">OpenTranslate</p>
+              <h1>手动翻译</h1>
+            </div>
           </div>
-
-          <div class="actions">
-            <wa-button id="translateBtn" variant="brand">翻译</wa-button>
-            <wa-button id="copyBtn" appearance="outlined" variant="neutral" disabled>复制结果</wa-button>
-            <wa-button id="settingsBtn" appearance="plain" variant="neutral">设置</wa-button>
+          <div class="topbar-actions">
+            <button id="settingsBtn" class="button button-ghost" type="button">设置</button>
+            <button id="copyBtn" class="button" type="button" disabled>复制结果</button>
+            <button id="translateBtn" class="button button-primary" type="button">翻译</button>
           </div>
         </header>
 
-        <wa-callout id="status" class="status-callout" appearance="outlined" variant="neutral" size="small" hidden></wa-callout>
+        <p id="status" class="note" hidden></p>
 
-        <section class="language-grid">
-          <wa-input
-            id="sourceLang"
-            label="源语言"
-            placeholder="auto"
-            hint="支持 auto、en、ja、zh-CN"
-            autocomplete="off"
-          ></wa-input>
-
-          <wa-input
-            id="targetLang"
-            label="目标语言"
-            placeholder="zh-CN"
-            hint="建议填写明确目标语言"
-            autocomplete="off"
-          ></wa-input>
+        <section class="lang-row">
+          <label class="field">
+            <span>源语言</span>
+            <select id="sourceLang"></select>
+          </label>
+          <label class="field">
+            <span>目标语言</span>
+            <select id="targetLang"></select>
+          </label>
         </section>
 
-        <section class="editor-grid">
-          <wa-textarea
-            id="input"
-            label="输入文本"
-            hint="支持多行输入"
-            rows="15"
-            resize="none"
-            placeholder="请输入要翻译的文本"
-          ></wa-textarea>
-
-          <wa-textarea
-            id="output"
-            label="翻译结果"
-            hint="完成后可直接复制"
-            rows="15"
-            resize="none"
-            readonly
-            placeholder="翻译结果会显示在这里。"
-          ></wa-textarea>
+        <section class="editors">
+          <label class="editor">
+            <span>原文</span>
+            <textarea id="input" rows="12" placeholder="输入或粘贴要翻译的文本"></textarea>
+          </label>
+          <label class="editor">
+            <span>译文</span>
+            <textarea id="output" rows="12" readonly placeholder="译文会显示在这里"></textarea>
+          </label>
         </section>
       </section>
     </main>
-
-    <script type="module" src="./translate.js?v=6"></script>
+    <script type="module" src="./translate.js?v=7"></script>
   </body>
 </html>

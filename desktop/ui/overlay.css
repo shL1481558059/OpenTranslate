@@ -5,26 +5,20 @@ body {
   height: 100%;
   background: transparent;
   overflow: hidden;
-  font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
+  font-family: Geist, Inter, ui-sans-serif, system-ui, "Segoe UI", "Noto Sans SC", "PingFang SC", sans-serif;
 }
 
 :root {
   color-scheme: light dark;
+  --radius: 6px;
   --control-height: 36px;
-  --control-gap: 4px;
+  --control-gap: 2px;
   --control-padding: 4px;
-  --action-button-width: 82px;
-  --action-button-height: 26px;
-  --control-surface: rgba(10, 15, 24, 0.76);
-  --control-shadow: 0 12px 32px rgba(2, 6, 23, 0.28);
-  --button-surface: transparent;
-  --button-surface-hover: rgba(255, 255, 255, 0.08);
-  --button-surface-active: rgba(255, 255, 255, 0.12);
-  --button-text: rgba(248, 250, 252, 0.98);
-  --button-text-muted: rgba(203, 213, 225, 0.74);
-  --button-icon: rgba(226, 232, 240, 0.88);
-  --feedback-surface: rgba(255, 255, 255, 0.11);
-  --close-text: rgba(241, 245, 249, 0.88);
+  --action-button-width: 64px;
+  --control-surface: rgba(10, 10, 10, 0.94);
+  --control-border: rgba(255, 255, 255, 0.16);
+  --button-text: #fafafa;
+  --button-text-muted: rgba(250, 250, 250, 0.72);
 }
 
 #mask,
@@ -35,8 +29,7 @@ body {
 
 #mask {
   position: absolute;
-  background: rgba(0, 0, 0, 0.35);
-  transition: background 120ms ease;
+  background: rgba(0, 0, 0, 0.45);
 }
 
 #snapshot {
@@ -57,12 +50,13 @@ body {
   align-items: center;
   height: 28px;
   padding: 0 10px;
-  border-radius: 6px;
-  background: rgba(15, 23, 42, 0.92);
-  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius);
+  background: #0a0a0a;
+  color: #fafafa;
   font-size: 12px;
-  font-weight: 600;
-  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.35);
+  font-weight: 500;
+  letter-spacing: 0;
   pointer-events: none;
 }
 
@@ -77,136 +71,54 @@ body {
   align-items: center;
   gap: var(--control-gap);
   height: var(--control-height);
-  padding: 4px var(--control-padding);
+  padding: 4px;
   box-sizing: border-box;
   background: var(--control-surface);
-  border: none;
-  border-radius: 8px;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  box-shadow: var(--control-shadow);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+  pointer-events: auto;
 }
 
-#controls button {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  border: none;
-  border-radius: 6px;
-  background: var(--button-surface);
+.tool-btn {
+  box-sizing: border-box;
+  min-width: var(--action-button-width);
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
   color: var(--button-text);
   cursor: pointer;
   font: inherit;
-  transition:
-    transform 140ms ease,
-    background 140ms ease,
-    opacity 120ms ease;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
   -webkit-app-region: no-drag;
 }
 
-#controls button:hover {
-  background: var(--button-surface-hover);
-  transform: translateY(-1px);
+.tool-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
 }
 
-#controls button:active {
-  background: var(--button-surface-active);
-  transform: translateY(0);
+.tool-btn:active {
+  background: rgba(255, 255, 255, 0.14);
 }
 
-#controls button:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.72);
+.tool-btn:focus-visible {
+  outline: 1px solid #fafafa;
   outline-offset: 1px;
 }
 
-#controls button:disabled {
-  cursor: default;
-  opacity: 0.58;
-  transform: none;
-}
-
-#controls button[hidden] {
+.tool-btn:disabled,
+.tool-btn[hidden] {
   display: none;
 }
 
-.action-btn {
-  box-sizing: border-box;
-  width: var(--action-button-width);
-  height: var(--action-button-height);
-  padding: 0 8px;
-  white-space: normal;
-}
-
-.action-btn__icon,
-.close-btn__icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.action-btn__icon,
-.close-btn__icon {
-  width: 14px;
-  height: 14px;
-  color: var(--button-icon);
-}
-
-.action-btn__icon wa-icon,
-.close-btn__icon wa-icon {
-  width: 10px;
-  height: 10px;
-  font-size: 10px;
-}
-
-.action-btn__text {
-  min-width: 0;
-  display: grid;
-  gap: 1px;
-}
-
-.action-btn__eyebrow,
-.action-btn__label {
-  display: block;
-  white-space: nowrap;
-}
-
-.action-btn__eyebrow {
-  color: var(--button-text-muted);
-  font-size: 7px;
-  line-height: 1;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-}
-
-.action-btn__label {
-  font-size: 11px;
-  line-height: 1.05;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.action-btn[data-state='success'] {
-  background: var(--feedback-surface);
-}
-
-.action-btn[data-state='success'] .action-btn__icon {
-  color: var(--button-icon);
-}
-
-.action-btn[data-state='error'] {
-  background: var(--feedback-surface);
-}
-
-.action-btn[data-state='error'] .action-btn__icon {
-  color: var(--button-icon);
-}
-
-.close-btn {
-  justify-content: flex-start;
-  color: var(--close-text);
+.tool-btn[data-state='success'],
+.tool-btn[data-state='error'] {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .block {
@@ -215,18 +127,6 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
-  hyphens: auto;
   border: none;
   border-radius: 0;
-  backdrop-filter: none;
-}
-
-:root[data-theme='light'] {
-  --control-surface: rgba(15, 23, 42, 0.76);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme-preference='light']) {
-    --control-surface: rgba(8, 12, 20, 0.8);
-  }
 }

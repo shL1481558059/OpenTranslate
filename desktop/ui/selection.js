@@ -9,7 +9,7 @@ const hoverOutlineRect = createSvgRect(
   { x: 0, y: 0, width: 0, height: 0 },
   {
     fill: 'none',
-    stroke: '#00d084',
+    stroke: '#171717',
     'stroke-width': '1',
     'stroke-dasharray': '6 4',
     visibility: 'hidden'
@@ -26,6 +26,12 @@ let displayBounds = {
   width: window.innerWidth || 0,
   height: window.innerHeight || 0
 };
+let webviewOrigin = {
+  x: Number.isFinite(window.screenX) ? window.screenX : 0,
+  y: Number.isFinite(window.screenY) ? window.screenY : 0
+};
+let activePointer = null;
+let lastClient = null;
 let windowRects = [];
 const baseHint = '拖拽框选，单击整窗。按 ESC 取消。';
 
@@ -83,8 +89,8 @@ function resizeMask() {
 function toClientRect(rect) {
   if (!rect) return null;
   return {
-    x: rect.x - displayBounds.x,
-    y: rect.y - displayBounds.y,
+    x: rect.x - webviewOrigin.x,
+    y: rect.y - webviewOrigin.y,
     width: rect.width,
     height: rect.height
   };
@@ -188,44 +194,14 @@ function hitTestWindow(point) {
 }
 
 function toScreenPoint(pointer) {
-  if (
-    displayBounds &&
-    Number.isFinite(displayBounds.x) &&
-    Number.isFinite(displayBounds.y) &&
-    Number.isFinite(pointer?.clientX) &&
-    Number.isFinite(pointer?.clientY)
-  ) {
-    return {
-      x: Math.round(displayBounds.x + pointer.clientX),
-      y: Math.round(displayBounds.y + pointer.clientY)
-    };
+  if (Number.isFinite(pointer?.clientX) && Number.isFinite(pointer?.clientY)) {
+    return window.selectionGeometry.clientToScreen(getClientPoint(pointer), webviewOrigin);
   }
 
   return {
     x: toFiniteNumber(pointer?.screenX),
     y: toFiniteNumber(pointer?.screenY)
   };
-}
-
-function resolveCursorScreenPoint(pointer) {
-  const fallback = toScreenPoint(pointer);
-  if (!window.snapTranslate?.getCursorScreenPointSync) {
-    return fallback;
-  }
-
-  try {
-    const point = window.snapTranslate.getCursorScreenPointSync();
-    if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
-      return {
-        x: Math.round(toFiniteNumber(point.x)),
-        y: Math.round(toFiniteNumber(point.y))
-      };
-    }
-  } catch {
-    // ignore and fall back to renderer event coordinates
-  }
-
-  return fallback;
 }
 
 function renderRect(startPoint, endPoint) {
@@ -250,12 +226,15 @@ function getRenderedSelectionRect() {
   if (!width || !height) {
     return null;
   }
-  return {
-    x: Math.round(displayBounds.x + bounds.left),
-    y: Math.round(displayBounds.y + bounds.top),
-    width,
-    height
-  };
+  return window.selectionGeometry.clampRect(
+    {
+      x: Math.round(webviewOrigin.x + bounds.left),
+      y: Math.round(webviewOrigin.y + bounds.top),
+      width,
+      height
+    },
+    displayBounds
+  );
 }
 
 function processPointerMove(pointer) {
@@ -287,40 +266,28 @@ function schedulePointerFrame() {
   });
 }
 
-window.addEventListener('mousedown', (event) => {
-  resetPointerFrame();
-  if (hoveredWindow) {
-    hoveredWindow = null;
-    redrawMask();
-  }
-  startClient = getClientPoint(event);
-  startScreen = resolveCursorScreenPoint(event);
-  renderRect(startClient, startClient);
-});
-
-window.addEventListener('mousemove', (event) => {
+function rememberPointer(event) {
+  lastClient = getClientPoint(event);
   pendingPointer = {
     screenX: event.screenX,
     screenY: event.screenY,
     clientX: event.clientX,
     clientY: event.clientY
   };
-  schedulePointerFrame();
-});
+}
 
-window.addEventListener('mouseup', async (event) => {
-  resetPointerFrame();
-  if (!startClient) {
+async function finishSelection(endClient) {
+  if (!startClient || !endClient) {
+    startClient = null;
+    startScreen = null;
+    activePointer = null;
     return;
   }
-  const endScreen = resolveCursorScreenPoint(event);
-  const endClient = getClientPoint(event);
   renderRect(startClient, endClient);
-  const width = Math.abs(startClient.x - endClient.x);
-  const height = Math.abs(startClient.y - endClient.y);
+  const endScreen = window.selectionGeometry.clientToScreen(endClient, webviewOrigin);
   let rect;
 
-  if (width < CLICK_DISTANCE && height < CLICK_DISTANCE) {
+  if (window.selectionGeometry.isClick(startClient, endClient, CLICK_DISTANCE)) {
     const target = hitTestWindow(endScreen);
     if (target) {
       rect = {
@@ -342,20 +309,61 @@ window.addEventListener('mouseup', async (event) => {
       };
     }
   } else {
-    if (startScreen && Number.isFinite(startScreen.x) && Number.isFinite(startScreen.y)) {
-      rect = {
-        x: Math.min(startScreen.x, endScreen.x),
-        y: Math.min(startScreen.y, endScreen.y),
-        width: Math.abs(startScreen.x - endScreen.x),
-        height: Math.abs(startScreen.y - endScreen.y)
-      };
-    } else {
-      rect = getRenderedSelectionRect();
-    }
+    rect = window.selectionGeometry.clampRect(
+      window.selectionGeometry.dragRect(startClient, endClient, webviewOrigin),
+      displayBounds
+    );
   }
   startClient = null;
   startScreen = null;
+  activePointer = null;
+  lastClient = null;
   await window.snapTranslate.completeSelection(rect);
+}
+
+window.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) {
+    return;
+  }
+  resetPointerFrame();
+  if (hoveredWindow) {
+    hoveredWindow = null;
+    redrawMask();
+  }
+  activePointer = event.pointerId;
+  try {
+    event.target.setPointerCapture(event.pointerId);
+  } catch {
+    // capture is a best effort; pointerup on window still completes the drag
+  }
+  startClient = getClientPoint(event);
+  startScreen = window.selectionGeometry.clientToScreen(startClient, webviewOrigin);
+  lastClient = startClient;
+  renderRect(startClient, startClient);
+});
+
+window.addEventListener('pointermove', (event) => {
+  if (activePointer !== null && event.pointerId !== activePointer) {
+    return;
+  }
+  rememberPointer(event);
+  schedulePointerFrame();
+});
+
+window.addEventListener('pointerup', async (event) => {
+  if (activePointer !== null && event.pointerId !== activePointer) {
+    return;
+  }
+  resetPointerFrame();
+  await finishSelection(getClientPoint(event));
+});
+
+window.addEventListener('pointercancel', async (event) => {
+  if (activePointer !== null && event.pointerId !== activePointer) {
+    return;
+  }
+  resetPointerFrame();
+  await finishSelection(lastClient);
 });
 
 window.addEventListener('keydown', async (event) => {
@@ -399,6 +407,12 @@ if (window.snapTranslate?.onSelectionWindows) {
   window.snapTranslate.onSelectionWindows((payload) => {
     if (payload?.displayBounds) {
       displayBounds = payload.displayBounds;
+    }
+    if (Number.isFinite(payload?.webviewOrigin?.x) && Number.isFinite(payload?.webviewOrigin?.y)) {
+      webviewOrigin = {
+        x: payload.webviewOrigin.x,
+        y: payload.webviewOrigin.y
+      };
     }
     rebuildSnapEdges(payload?.windows || []);
     const nextHint = getSelectionHint(payload);

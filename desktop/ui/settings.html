@@ -1,134 +1,143 @@
 <!doctype html>
-<html lang="zh-CN" class="wa-theme-default wa-brand-indigo">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Settings</title>
-    <script src="./theme-bootstrap.js?v=1"></script>
+    <title>设置</title>
+    <script src="./theme-bootstrap.js?v=2"></script>
     <script src="./tauri-bridge.js"></script>
-    <link rel="stylesheet" href="./vendor/webawesome/styles/webawesome.css" />
-    <link rel="stylesheet" href="./theme.css?v=4" />
-    <link rel="stylesheet" href="./settings.css?v=5" />
+    <link rel="stylesheet" href="./theme.css?v=8" />
+    <link rel="stylesheet" href="./settings.css?v=9" />
   </head>
-  <body>
+  <body class="page-settings-body">
     <div class="window-drag-region" aria-hidden="true"></div>
-    <main class="page page-settings">
+    <main class="app page-settings">
       <section class="shell">
-        <header class="shell-header">
-          <div class="shell-copy">
-            <h1>翻译设置</h1>
-            <p>翻译走外部接口。在这里选择 DeepL、DeepLX 或 OpenAI 兼容服务。</p>
+        <header class="topbar">
+          <div class="brand">
+            <span class="mark" aria-hidden="true"></span>
+            <div>
+              <p class="kicker">OpenTranslate</p>
+              <h1>设置</h1>
+            </div>
           </div>
-
-          <div class="actions">
-            <wa-button id="backBtn" appearance="plain" variant="neutral">返回</wa-button>
-            <wa-button id="saveBtn" form="settingsForm" type="submit" variant="brand">保存设置</wa-button>
+          <div class="topbar-actions">
+            <button id="backBtn" class="button button-ghost" type="button">返回</button>
+            <button id="saveBtn" class="button button-primary" type="submit" form="settingsForm">保存</button>
           </div>
         </header>
 
-        <wa-callout id="status" class="status-callout" appearance="outlined" variant="neutral" size="small" hidden></wa-callout>
+        <p id="status" class="note" hidden></p>
+        <p class="lede">翻译只走外部接口。选择 DeepL、DeepLX 或 OpenAI 兼容服务。</p>
 
-        <form id="settingsForm" class="settings-grid">
-          <section class="section-block">
-            <div class="section-head">
+        <form id="settingsForm">
+          <section class="panel">
+            <div class="panel-head">
               <h2>翻译接口</h2>
-              <p>不在本机部署翻译模型。DeepL 和 OpenAI 需要 API Key，DeepLX 的 Key 可选。</p>
+              <p class="hint">DeepL 和 OpenAI 需要 API Key。DeepLX 的 Key 可以留空。</p>
             </div>
-
-            <div class="settings-stack">
-              <wa-select id="provider" label="接口类型">
-                <wa-option value="deepl">DeepL</wa-option>
-                <wa-option value="deeplx">DeepLX</wa-option>
-                <wa-option value="openai">OpenAI 兼容</wa-option>
-              </wa-select>
-
-              <wa-input id="baseUrl" label="Base URL" autocomplete="off"></wa-input>
-
-              <wa-input id="apiKey" label="API Key" type="password" password-toggle autocomplete="off"></wa-input>
-              <p class="field-note">API Key 写入系统钥匙串。钥匙串不可用时保存在本机配置目录，权限仅限当前用户，不会写入 settings.json，也不会出现在日志里。</p>
-
-              <div id="openaiFields" class="settings-stack">
-                <wa-input id="model" label="Model" placeholder="gpt-4o-mini" autocomplete="off"></wa-input>
-                <wa-textarea
-                  id="prompt"
-                  label="自定义提示词"
-                  hint="可选。会附加在翻译指令之后，返回格式仍按编号 JSON 解析。"
-                  rows="4"
-                  resize="auto"
-                  placeholder="例如：保留专有名词，语气正式"
-                ></wa-textarea>
+            <div class="stack">
+              <label class="field">
+                <span>接口类型</span>
+                <select id="provider">
+                  <option value="deepl">DeepL</option>
+                  <option value="deeplx">DeepLX</option>
+                  <option value="openai">OpenAI 兼容</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Base URL</span>
+                <input id="baseUrl" autocomplete="off" />
+                <p id="baseUrlHint" class="hint"></p>
+              </label>
+              <div class="field">
+                <span>API Key</span>
+                <div class="secret-row">
+                  <input id="apiKey" type="password" autocomplete="off" />
+                  <button id="apiKeyToggle" class="button" type="button">显示</button>
+                </div>
+                <p id="apiKeyHint" class="hint"></p>
+                <p class="hint">API Key 写入系统钥匙串。钥匙串不可用时保存在本机配置目录，权限仅限当前用户，不会写入 settings.json，也不会出现在日志里。</p>
               </div>
-
-              <div class="toggle-actions">
-                <wa-button id="testBtn" type="button" appearance="outlined" variant="neutral">测试连接</wa-button>
+              <div id="openaiFields" class="stack">
+                <label class="field">
+                  <span>Model</span>
+                  <input id="model" placeholder="gpt-4o-mini" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>自定义提示词</span>
+                  <textarea id="prompt" rows="4" placeholder="可选。例如：保留专有名词，语气正式"></textarea>
+                  <p class="hint">会附加在翻译指令之后。返回格式仍按编号 JSON 解析。</p>
+                </label>
+              </div>
+              <div class="inline-feedback">
+                <button id="testBtn" class="button" type="button">测试连接</button>
+                <p id="testStatus" class="note" hidden></p>
               </div>
             </div>
           </section>
 
-          <section class="section-block">
-            <div class="section-head">
+          <section class="panel">
+            <div class="panel-head">
               <h2>外观</h2>
-              <p>默认跟随系统，也可以手动固定成浅色或深色。</p>
+              <p class="hint">默认跟随系统，也可以固定浅色或深色。</p>
             </div>
-
-            <wa-select id="theme" label="主题模式">
-              <wa-option value="system">跟随系统</wa-option>
-              <wa-option value="light">浅色</wa-option>
-              <wa-option value="dark">深色</wa-option>
-            </wa-select>
+            <label class="field">
+              <span>主题</span>
+              <select id="theme">
+                <option value="system">跟随系统</option>
+                <option value="light">浅色</option>
+                <option value="dark">深色</option>
+              </select>
+            </label>
           </section>
 
-          <section class="section-block">
-            <div class="section-head">
+          <section class="panel">
+            <div class="panel-head">
               <h2>语言</h2>
-              <p>手动翻译和截图翻译会共用这里的默认语言。</p>
+              <p class="hint">手动翻译和截图翻译共用这里的默认语言。</p>
             </div>
-
             <div class="two-col">
-              <wa-input
-                id="sourceLang"
-                label="源语言"
-                placeholder="auto"
-                hint="例如 auto、en、ja、zh-CN"
-                autocomplete="off"
-              ></wa-input>
-
-              <wa-input id="targetLang" label="目标语言" placeholder="zh-CN" autocomplete="off"></wa-input>
+              <label class="field">
+                <span>源语言</span>
+                <select id="sourceLang"></select>
+              </label>
+              <label class="field">
+                <span>目标语言</span>
+                <select id="targetLang"></select>
+              </label>
             </div>
           </section>
 
-          <section class="section-block">
-            <div class="section-head">
+          <section class="panel">
+            <div class="panel-head">
               <h2>快捷键</h2>
-              <p>点击输入框后按组合键绑定，按 Esc 可清空。</p>
+              <p class="hint">点进输入框后按组合键。Esc、Backspace 或 Delete 清空。</p>
             </div>
-
-            <wa-input id="hotkey" label="截图快捷键" placeholder="点击后按下组合键" autocomplete="off"></wa-input>
+            <label class="field">
+              <span>截图快捷键</span>
+              <input id="hotkey" placeholder="点击后按下组合键" autocomplete="off" />
+            </label>
           </section>
 
-          <section class="section-block">
-            <div class="section-head">
+          <section class="panel">
+            <div class="panel-head">
               <h2>启动</h2>
-              <p>控制 OpenTranslate 是否在系统登录后自动启动。</p>
+              <p class="hint">登录系统后是否自动打开 OpenTranslate。</p>
             </div>
-
-            <div class="toggle-row">
-              <wa-switch id="launchAtLogin" size="medium">开机自启</wa-switch>
-              <p id="launchAtLoginHelp" class="field-note"></p>
-              <div class="toggle-actions">
-                <wa-button id="repairLaunchAtLoginBtn" appearance="outlined" variant="neutral" size="small" hidden>
-                  修复自启项
-                </wa-button>
-                <wa-button id="moveToApplicationsBtn" appearance="outlined" variant="neutral" size="small" hidden>
-                  移到应用程序文件夹
-                </wa-button>
-              </div>
+            <label class="check">
+              <input id="launchAtLogin" type="checkbox" />
+              <span>开机自启</span>
+            </label>
+            <p id="launchAtLoginHelp" class="hint"></p>
+            <div class="toggle-actions">
+              <button id="repairLaunchAtLoginBtn" class="button" type="button" hidden>修复自启项</button>
+              <button id="moveToApplicationsBtn" class="button" type="button" hidden>移到应用程序文件夹</button>
             </div>
           </section>
         </form>
       </section>
     </main>
-
-    <script type="module" src="./settings.js?v=6"></script>
+    <script type="module" src="./settings.js?v=7"></script>
   </body>
 </html>

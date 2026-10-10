@@ -2,13 +2,12 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 
-require('./sync-ui-vendor');
-
 const root = path.join(__dirname, '../desktop/ui');
 const port = Number(process.env.OPENTRANSLATE_DEV_PORT || 1420);
 const types = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json',
   '.png': 'image/png',
@@ -34,7 +33,10 @@ const server = http.createServer((request, response) => {
       response.end('not found');
       return;
     }
-    response.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' });
+    response.writeHead(200, {
+      'Content-Type': types[path.extname(file)] || 'application/octet-stream',
+      'Cache-Control': 'no-store'
+    });
     response.end(data);
   });
 });

@@ -6,48 +6,32 @@ const extractSourceBtn = document.getElementById('extractSource');
 const extractTranslatedBtn = document.getElementById('extractTranslated');
 const closeBtn = document.getElementById('close');
 const toastEl = document.getElementById('toast');
-const ACTION_BUTTON_WIDTH = 82;
+const ACTION_BUTTON_WIDTH = 64;
 const CONTROL_PADDING = 4;
-const CONTROL_GAP = 4;
+const CONTROL_GAP = 2;
 
 const DEFAULT_BUTTON_LABELS = {
   source: {
-    eyebrow: 'OCR',
     label: '原文',
-    title: '复制原文',
-    icon: {
-      name: 'file',
-      variant: 'solid'
-    }
+    title: '复制原文'
   },
   translated: {
-    eyebrow: 'TR',
     label: '译文',
-    title: '复制译文',
-    icon: {
-      name: 'copy',
-      variant: 'regular'
-    }
+    title: '复制译文'
+  },
+  close: {
+    label: '关闭',
+    title: '关闭'
   }
 };
 
 const BUTTON_FEEDBACK_LABELS = {
   success: {
-    eyebrow: 'OK',
     label: '已复制',
-    icon: {
-      name: 'check',
-      variant: 'solid'
-    },
     state: 'success'
   },
   error: {
-    eyebrow: 'ERR',
     label: '复制失败',
-    icon: {
-      name: 'circle-xmark',
-      variant: 'regular'
-    },
     state: 'error'
   }
 };
@@ -159,22 +143,11 @@ function applyActionButtonCopy(button, content, state) {
     return;
   }
 
-  const eyebrowEl = button.querySelector('[data-role="eyebrow"]');
   const labelEl = button.querySelector('[data-role="label"]');
-  const iconEl = button.querySelector('wa-icon');
-
-  if (eyebrowEl) {
-    eyebrowEl.textContent = content.eyebrow;
-  }
-
   if (labelEl) {
     labelEl.textContent = content.label;
-  }
-
-  if (iconEl && content.icon) {
-    iconEl.setAttribute('name', content.icon.name);
-    iconEl.setAttribute('variant', content.icon.variant || 'solid');
-    iconEl.setAttribute('library', content.icon.library || 'system');
+  } else {
+    button.textContent = content.label;
   }
 
   if (content.title) {
@@ -255,6 +228,26 @@ function applyControlViewport(payload) {
   controlsEl.style.width = `${width}px`;
   controlsEl.style.left = `${controlRect.x + controlRect.width - width}px`;
   controlsEl.style.top = `${controlRect.y}px`;
+  reportControlHitRect();
+}
+
+function reportControlHitRect() {
+  if (!window.snapTranslate?.setOverlayHitRect || !controlsEl) {
+    return;
+  }
+  if (controlsEl.style.display === 'none') {
+    return;
+  }
+  const rect = controlsEl.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) {
+    return;
+  }
+  window.snapTranslate.setOverlayHitRect({
+    x: rect.left,
+    y: rect.top,
+    width: rect.width,
+    height: rect.height
+  });
 }
 
 function applySnapshot(payload) {
@@ -357,6 +350,7 @@ function renderBlocks(payload) {
   }
 
   window.requestAnimationFrame(() => {
+    reportControlHitRect();
     reportOverlayMetrics(payload);
   });
 }
@@ -388,8 +382,19 @@ function reportOverlayMetrics(payload) {
     };
   });
 
+  const controlsRect = controlsEl?.getBoundingClientRect?.() || null;
   window.snapTranslate.reportOverlayMetrics({
     mode: getOverlayMode(payload),
+    controlsDisplay: controlsEl?.style.display || '',
+    controlsText: (controlsEl?.innerText || '').replace(/\s+/g, ' ').slice(0, 80),
+    controlsRect: controlsRect
+      ? {
+          top: Math.round(controlsRect.top),
+          left: Math.round(controlsRect.left),
+          width: Math.round(controlsRect.width),
+          height: Math.round(controlsRect.height)
+        }
+      : null,
     selectionRect: payload?.selectionRect || null,
     overlayBounds: payload?.overlayBounds || null,
     rootRect: {
@@ -434,6 +439,7 @@ function flashActionFeedback(button, kind, status) {
   clearTimeout(button._feedbackTimer);
   applyActionButtonCopy(button, BUTTON_FEEDBACK_LABELS[status], BUTTON_FEEDBACK_LABELS[status].state);
   showToast(BUTTON_FEEDBACK_LABELS[status].label);
+  reportControlHitRect();
   button._feedbackTimer = window.setTimeout(() => {
     if (!button.hidden) {
       resetActionButton(button, kind);
@@ -461,17 +467,23 @@ window.snapTranslate.onOverlayRender((payload) => {
   renderBlocks(payload);
 });
 
-closeBtn.addEventListener('click', async () => {
-  await window.snapTranslate.closeOverlay();
-});
+function bindPress(button, action) {
+  if (!button) {
+    return;
+  }
+  button.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || button.disabled || button.hidden) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    action();
+  });
+}
 
-extractSourceBtn.addEventListener('click', async () => {
-  await copyExtractionText('source');
-});
-
-extractTranslatedBtn.addEventListener('click', async () => {
-  await copyExtractionText('translated');
-});
+bindPress(closeBtn, () => window.snapTranslate.closeOverlay());
+bindPress(extractSourceBtn, () => copyExtractionText('source'));
+bindPress(extractTranslatedBtn, () => copyExtractionText('translated'));
 
 window.addEventListener('keydown', async (event) => {
   if (event.key === 'Escape') {

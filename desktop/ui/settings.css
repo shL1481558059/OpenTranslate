@@ -1,50 +1,21 @@
-.settings-grid,
-.settings-stack {
-  display: grid;
-  gap: 14px;
+body.page-settings-body {
+  height: 100%;
+  overflow: hidden;
 }
 
-.toggle-row {
+.page-settings.app {
+  display: block;
+  height: 100vh;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.page-settings .shell {
+  max-width: 720px;
+}
+
+.page-settings form {
   display: grid;
   gap: 8px;
-}
-
-.toggle-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.field-note {
-  margin: 0;
-  color: var(--wa-color-text-quiet);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.section-block {
-  display: grid;
-  gap: 14px;
-  padding: 16px;
-  border: 1px solid var(--surface-card-border);
-  border-radius: 16px;
-  background: var(--surface-card);
-  backdrop-filter: blur(12px) saturate(1.04);
-  -webkit-backdrop-filter: blur(12px) saturate(1.04);
-}
-
-.two-col {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-
-@media (max-width: 760px) {
-  .section-block {
-    padding: 14px;
-  }
-
-  .two-col {
-    grid-template-columns: 1fr;
-  }
 }
