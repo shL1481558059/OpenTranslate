@@ -3285,7 +3285,7 @@ dependencies = [
 
 [[package]]
 name = "ocr-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "image",
  "ndarray",
@@ -3357,7 +3357,7 @@ dependencies = [
 
 [[package]]
 name = "opentranslate"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arboard",
  "axum",
