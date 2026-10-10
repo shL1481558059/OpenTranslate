@@ -40,7 +40,10 @@ pub fn list_windows(bounds: Rect) -> Vec<SnapWindow> {
             }
             let title = window.title().unwrap_or_default();
             let app = window.app_name().unwrap_or_default();
-            if title == "Selection" || title == "Overlay" || (app == "OpenTranslate" && title.is_empty()) {
+            if title == "Selection"
+                || title == "Overlay"
+                || (app == "OpenTranslate" && title.is_empty())
+            {
                 return None;
             }
             if !intersects(rect, bounds) {
@@ -81,7 +84,9 @@ pub fn monitor_at(x: i32, y: i32) -> Result<Rect, String> {
 }
 
 fn frames_first(monitors: &[Monitor]) -> Option<Rect> {
-    monitors.iter().find_map(|monitor| monitor_rect(monitor).ok())
+    monitors
+        .iter()
+        .find_map(|monitor| monitor_rect(monitor).ok())
 }
 
 fn monitor_rect(monitor: &Monitor) -> Result<Rect, String> {
@@ -97,11 +102,42 @@ fn point_inside(x: i32, y: i32, rect: Rect) -> bool {
     x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height
 }
 
+pub fn hits_control(x: i32, y: i32, rect: Rect) -> bool {
+    const PAD: i32 = 8;
+    x >= rect.x.saturating_sub(PAD)
+        && y >= rect.y.saturating_sub(PAD)
+        && x < rect.x + rect.width + PAD
+        && y < rect.y + rect.height + PAD
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_hit_includes_padding_and_rejects_the_page() {
+        let rect = Rect {
+            x: 400,
+            y: 80,
+            width: 246,
+            height: 36,
+        };
+        assert!(hits_control(630, 90, rect));
+        assert!(hits_control(394, 78, rect));
+        assert!(!hits_control(200, 200, rect));
+        assert!(!hits_control(700, 90, rect));
+    }
+}
+
 pub fn capture_rect(rect: Rect) -> Result<(RgbaImage, f64), String> {
     let monitors = Monitor::all().map_err(|error| error.to_string())?;
     let monitor = monitors
         .iter()
-        .find(|monitor| monitor_rect(monitor).ok().is_some_and(|bounds| intersects(rect, bounds)))
+        .find(|monitor| {
+            monitor_rect(monitor)
+                .ok()
+                .is_some_and(|bounds| intersects(rect, bounds))
+        })
         .or_else(|| monitors.first())
         .ok_or_else(|| "no monitor available".to_string())?;
     let bounds = monitor_rect(monitor)?;
@@ -116,7 +152,10 @@ pub fn capture_rect(rect: Rect) -> Result<(RgbaImage, f64), String> {
     let crop_y = crop_y.min(full.height().saturating_sub(1));
     let crop_w = crop_w.min(full.width().saturating_sub(crop_x)).max(1);
     let crop_h = crop_h.min(full.height().saturating_sub(crop_y)).max(1);
-    Ok((crop_imm(&full, crop_x, crop_y, crop_w, crop_h).to_image(), scale_x))
+    Ok((
+        crop_imm(&full, crop_x, crop_y, crop_w, crop_h).to_image(),
+        scale_x,
+    ))
 }
 
 pub fn average_color(image: &RgbaImage, rect: Rect) -> Option<Rgba<u8>> {

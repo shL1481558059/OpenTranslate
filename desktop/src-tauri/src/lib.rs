@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
@@ -32,6 +32,8 @@ pub struct AppState {
     pub settings: Mutex<Settings>,
     pub ready: Mutex<HashSet<String>>,
     pub selecting: AtomicBool,
+    pub overlay_control: Mutex<Option<Rect>>,
+    pub overlay_visible: AtomicBool,
 }
 
 pub fn run() {
@@ -52,11 +54,11 @@ pub fn run() {
                     let _ = app.run_on_main_thread({
                         let app = app.clone();
                         move || {
-                        if is_escape {
-                            dismiss_overlay(&app);
-                        } else {
-                            open_selection(&app);
-                        }
+                            if is_escape {
+                                dismiss_overlay(&app);
+                            } else {
+                                open_selection(&app);
+                            }
                         }
                     });
                 })
@@ -66,6 +68,8 @@ pub fn run() {
             settings: Mutex::new(Settings::defaults()),
             ready: Mutex::new(HashSet::new()),
             selecting: AtomicBool::new(false),
+            overlay_control: Mutex::new(None),
+            overlay_visible: AtomicBool::new(false),
         })
         .setup(|app| {
             configure_runtime(app.handle());
@@ -137,7 +141,9 @@ fn configure_runtime(app: &AppHandle) {
 
 fn settings_path_early() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        return std::path::PathBuf::from(dir).join("com.opentranslate.desktop").join("settings.json");
+        return std::path::PathBuf::from(dir)
+            .join("com.opentranslate.desktop")
+            .join("settings.json");
     }
     if let Ok(home) = std::env::var("HOME") {
         return std::path::PathBuf::from(home)
@@ -158,10 +164,14 @@ fn settings_path(app: &AppHandle) -> std::path::PathBuf {
 fn install_tray(app: &AppHandle) -> Result<(), String> {
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../assets/tray-template-18.png"))
         .map_err(|error| error.to_string())?;
-    let translate = MenuItem::with_id(app, "translate", "手动翻译", true, None::<&str>).map_err(|error| error.to_string())?;
-    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>).map_err(|error| error.to_string())?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>).map_err(|error| error.to_string())?;
-    let menu = Menu::with_items(app, &[&translate, &settings, &quit]).map_err(|error| error.to_string())?;
+    let translate = MenuItem::with_id(app, "translate", "手动翻译", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let menu = Menu::with_items(app, &[&translate, &settings, &quit])
+        .map_err(|error| error.to_string())?;
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
@@ -190,7 +200,9 @@ fn install_tray(app: &AppHandle) -> Result<(), String> {
 fn apply_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
     let parsed = hotkey::parse_shortcut(hotkey)?;
     let shortcuts = app.global_shortcut();
-    shortcuts.unregister_all().map_err(|error| error.to_string())?;
+    shortcuts
+        .unregister_all()
+        .map_err(|error| error.to_string())?;
     if let Some(shortcut) = parsed {
         if let Err(error) = shortcuts.register(shortcut) {
             if let Some(previous) = app
@@ -212,7 +224,11 @@ fn apply_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
 }
 
 fn open_selection(app: &AppHandle) {
-    if app.state::<AppState>().selecting.swap(true, Ordering::SeqCst) {
+    if app
+        .state::<AppState>()
+        .selecting
+        .swap(true, Ordering::SeqCst)
+    {
         return;
     }
     let (x, y) = cursor::cursor_position().unwrap_or((0, 0));
@@ -223,7 +239,9 @@ fn open_selection(app: &AppHandle) {
         height: 800,
     });
     place_window(app, "selection", host);
-    let _ = app.global_shortcut().register(Shortcut::new(None, Code::Escape));
+    let _ = app
+        .global_shortcut()
+        .register(Shortcut::new(None, Code::Escape));
     if let Some(window) = app.get_webview_window("selection") {
         let _ = window.show();
         let _ = window.set_focus();
@@ -245,15 +263,75 @@ fn open_selection(app: &AppHandle) {
 }
 
 fn dismiss_overlay(app: &AppHandle) {
+    set_overlay_visible(app, false);
+    set_overlay_control(app, None);
     if let Some(window) = app.get_webview_window("overlay") {
         let _ = window.hide();
+        let _ = window.set_ignore_cursor_events(true);
     }
     close_selection(app);
 }
 
+pub(crate) fn set_overlay_visible(app: &AppHandle, visible: bool) {
+    app.state::<AppState>()
+        .overlay_visible
+        .store(visible, Ordering::SeqCst);
+}
+
+pub(crate) fn set_overlay_control(app: &AppHandle, rect: Option<Rect>) {
+    if let Ok(mut guard) = app.state::<AppState>().overlay_control.lock() {
+        *guard = rect;
+    }
+}
+
+pub(crate) fn ensure_overlay_pointer(app: &AppHandle) {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut ignoring = true;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            let visible = app
+                .state::<AppState>()
+                .overlay_visible
+                .load(Ordering::SeqCst);
+            let hit = visible && pointer_over_controls(&app);
+            let next_ignore = !hit;
+            if next_ignore == ignoring {
+                continue;
+            }
+            ignoring = next_ignore;
+            let app = app.clone();
+            let _ = app.clone().run_on_main_thread(move || {
+                if let Some(window) = app.get_webview_window("overlay") {
+                    let _ = window.set_ignore_cursor_events(ignoring);
+                }
+            });
+        }
+    });
+}
+
+fn pointer_over_controls(app: &AppHandle) -> bool {
+    let Some((x, y)) = cursor::cursor_position() else {
+        return false;
+    };
+    let state = app.state::<AppState>();
+    let Ok(guard) = state.overlay_control.lock() else {
+        return false;
+    };
+    guard.is_some_and(|rect| capture::hits_control(x, y, rect))
+}
+
 fn close_selection(app: &AppHandle) {
-    app.state::<AppState>().selecting.store(false, Ordering::SeqCst);
-    let _ = app.global_shortcut().unregister(Shortcut::new(None, Code::Escape));
+    app.state::<AppState>()
+        .selecting
+        .store(false, Ordering::SeqCst);
+    let _ = app
+        .global_shortcut()
+        .unregister(Shortcut::new(None, Code::Escape));
     if let Some(window) = app.get_webview_window("selection") {
         let _ = window.hide();
     }
@@ -266,7 +344,11 @@ pub fn place_window(app: &AppHandle, label: &str, rect: Rect) {
         } else {
             "overlay.html"
         };
-        let title = if label == "selection" { "Selection" } else { "Overlay" };
+        let title = if label == "selection" {
+            "Selection"
+        } else {
+            "Overlay"
+        };
         let _ = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
             .title(title)
             .decorations(false)
@@ -285,7 +367,38 @@ pub fn place_window(app: &AppHandle, label: &str, rect: Rect) {
             rect.width.max(1) as u32,
             rect.height.max(1) as u32,
         )));
+        // Some window managers report a frame offset after the first move.
+        // Shift by that delta so the webview origin matches the monitor origin
+        // and translated boxes sit on the captured text.
+        if let Ok(actual) = window.outer_position() {
+            let dx = rect.x - actual.x;
+            let dy = rect.y - actual.y;
+            if dx != 0 || dy != 0 {
+                let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+                    rect.x + dx,
+                    rect.y + dy,
+                )));
+            }
+        }
         let _ = window.set_always_on_top(true);
+        align_shown_window(&window, rect);
+    }
+}
+
+pub(crate) fn align_shown_window(window: &WebviewWindow, rect: Rect) {
+    for _ in 0..3 {
+        let Ok(actual) = window.outer_position() else {
+            return;
+        };
+        let dx = rect.x - actual.x;
+        let dy = rect.y - actual.y;
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+            rect.x + dx,
+            rect.y + dy,
+        )));
     }
 }
 
@@ -297,7 +410,10 @@ fn show_page(app: &AppHandle, file: &str, nav: Option<String>) {
         Some(nav @ ("forward" | "back")) => format!("{file}?nav={nav}"),
         _ => file.to_string(),
     };
-    let script = format!("window.location.assign({})", serde_json::to_string(&target).unwrap_or_else(|_| "\"translate.html\"".into()));
+    let script = format!(
+        "window.location.assign({})",
+        serde_json::to_string(&target).unwrap_or_else(|_| "\"translate.html\"".into())
+    );
     let _ = window.eval(&script);
     let _ = window.show();
     let _ = window.set_focus();
@@ -354,7 +470,10 @@ async fn wait_for_label(app: &AppHandle, label: &str) {
 }
 
 fn parse_run_rect(spec: &str) -> Option<Rect> {
-    let parts: Vec<i32> = spec.split(',').filter_map(|part| part.trim().parse().ok()).collect();
+    let parts: Vec<i32> = spec
+        .split(',')
+        .filter_map(|part| part.trim().parse().ok())
+        .collect();
     if parts.len() != 4 {
         return None;
     }
@@ -424,7 +543,9 @@ fn overlay_set_ignore_mouse(app: AppHandle, should_ignore: Option<bool>) -> bool
     let Some(window) = app.get_webview_window("overlay") else {
         return false;
     };
-    window.set_ignore_cursor_events(should_ignore.unwrap_or(true)).is_ok()
+    window
+        .set_ignore_cursor_events(should_ignore.unwrap_or(true))
+        .is_ok()
 }
 
 #[tauri::command]
@@ -509,13 +630,18 @@ fn move_mac_bundle() -> Value {
     let Ok(exe) = std::env::current_exe() else {
         return json!({ "ok": false, "error": "move_to_applications_failed" });
     };
-    let Some(bundle) = exe.parent().and_then(|path| path.parent()).and_then(|path| path.parent()) else {
+    let Some(bundle) = exe
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+    else {
         return json!({ "ok": false, "error": "move_to_applications_failed" });
     };
     if bundle.starts_with("/Applications") {
         return json!({ "ok": true, "alreadyInApplicationsFolder": true });
     }
-    let destination = std::path::Path::new("/Applications").join(bundle.file_name().unwrap_or_default());
+    let destination =
+        std::path::Path::new("/Applications").join(bundle.file_name().unwrap_or_default());
     let status = std::process::Command::new("cp")
         .arg("-R")
         .arg(bundle)
@@ -586,7 +712,12 @@ fn hotkey_update(app: AppHandle, hotkey: String) -> Value {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn translate_text(app: AppHandle, text: String, source_lang: Option<String>, target_lang: Option<String>) -> Value {
+async fn translate_text(
+    app: AppHandle,
+    text: String,
+    source_lang: Option<String>,
+    target_lang: Option<String>,
+) -> Value {
     let text = text.trim().to_string();
     if text.is_empty() {
         return json!({ "ok": false, "error": "empty_text" });
@@ -601,7 +732,13 @@ async fn translate_text(app: AppHandle, text: String, source_lang: Option<String
     let target = target_lang.unwrap_or(settings.target_lang.clone());
     let result = translate::translate(&settings.translation(), &[text], &source, &target).await;
     match result {
-        Ok(items) => json!({ "ok": true, "text": items.first().cloned().unwrap_or_default(), "confidence": 1 }),
+        Ok(items) => match items.into_iter().next() {
+            Some(block) => match block.error {
+                Some(error) => json!({ "ok": false, "error": error }),
+                None => json!({ "ok": true, "text": block.text, "confidence": 1 }),
+            },
+            None => json!({ "ok": false, "error": "empty_text" }),
+        },
         Err(error) => json!({ "ok": false, "error": error }),
     }
 }
@@ -630,7 +767,9 @@ fn clipboard_write_text(text: String) -> bool {
     if value.is_empty() {
         return false;
     }
-    Clipboard::new().and_then(|mut clipboard| clipboard.set_text(value.to_string())).is_ok()
+    Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(value.to_string()))
+        .is_ok()
 }
 
 #[tauri::command]

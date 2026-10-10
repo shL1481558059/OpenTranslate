@@ -27,6 +27,12 @@ body {
   --close-text: rgba(241, 245, 249, 0.88);
 }
 
+#mask,
+#snapshot,
+#root {
+  pointer-events: none;
+}
+
 #mask {
   position: absolute;
   background: rgba(0, 0, 0, 0.35);
@@ -44,8 +50,29 @@ body {
   position: absolute;
 }
 
+#toast {
+  position: absolute;
+  z-index: 30;
+  display: none;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.35);
+  pointer-events: none;
+}
+
+#toast:not([hidden]) {
+  display: inline-flex;
+}
+
 #controls {
   position: absolute;
+  z-index: 20;
   display: none;
   align-items: center;
   gap: var(--control-gap);

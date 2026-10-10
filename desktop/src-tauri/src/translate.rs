@@ -31,29 +31,78 @@ impl std::fmt::Debug for TranslateConfig {
 }
 
 impl TranslateConfig {
-    pub fn from_settings(provider: &str, base_url: &str, api_key: &str, model: &str, prompt: &str) -> Self {
+    pub fn from_settings(
+        provider: &str,
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        prompt: &str,
+    ) -> Self {
         let model = model.trim();
         Self {
             provider: normalize_provider(provider),
             base_url: base_url.trim().to_string(),
             api_key: api_key.trim().to_string(),
-            model: if model.is_empty() { "gpt-4o-mini".into() } else { model.to_string() },
+            model: if model.is_empty() {
+                "gpt-4o-mini".into()
+            } else {
+                model.to_string()
+            },
             prompt: prompt.trim().to_string(),
             timeout: DEFAULT_TIMEOUT,
         }
     }
 }
 
-pub async fn translate(config: &TranslateConfig, texts: &[String], source_lang: &str, target_lang: &str) -> Result<Vec<String>, String> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TranslatedBlock {
+    pub text: String,
+    pub error: Option<String>,
+}
+
+impl TranslatedBlock {
+    fn ok(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            error: None,
+        }
+    }
+
+    fn failed(error: impl Into<String>) -> Self {
+        Self {
+            text: String::new(),
+            error: Some(error.into()),
+        }
+    }
+}
+
+pub async fn translate(
+    config: &TranslateConfig,
+    texts: &[String],
+    source_lang: &str,
+    target_lang: &str,
+) -> Result<Vec<TranslatedBlock>, String> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
     ensure_configured(config)?;
     let client = http_client(config.timeout)?;
     match config.provider.as_str() {
-        "deepl" => translate_deepl(&client, config, texts, source_lang, target_lang).await,
+        "deepl" => Ok(
+            translate_deepl(&client, config, texts, source_lang, target_lang)
+                .await?
+                .into_iter()
+                .map(TranslatedBlock::ok)
+                .collect(),
+        ),
         "deeplx" => translate_deeplx(&client, config, texts, source_lang, target_lang).await,
-        "openai" => translate_openai(&client, config, texts, source_lang, target_lang).await,
+        "openai" => Ok(
+            translate_openai(&client, config, texts, source_lang, target_lang)
+                .await?
+                .into_iter()
+                .map(TranslatedBlock::ok)
+                .collect(),
+        ),
         _ => Err("不支持的接口类型，请在设置中重新选择。".into()),
     }
 }
@@ -65,14 +114,19 @@ pub async fn test_connection(config: &TranslateConfig) -> Result<String, String>
         "deepl" => {
             let url = format!("{}/v2/usage", deepl_base(&config.base_url));
             let _body = send_text(&config.api_key, || {
-                client.get(&url).header("Authorization", deepl_auth(&config.api_key))
+                client
+                    .get(&url)
+                    .header("Authorization", deepl_auth(&config.api_key))
             })
             .await?;
             Ok("连接成功。".into())
         }
         "deeplx" => {
             let text = translate_deeplx(&client, config, &["Hello".into()], "en", "zh-CN").await?;
-            if text.first().map(|item| item.trim().is_empty()).unwrap_or(true) {
+            let empty = text
+                .first()
+                .is_none_or(|item| item.error.is_some() || item.text.trim().is_empty());
+            if empty {
                 return Err("DeepLX 没有返回译文。".into());
             }
             Ok("连接成功。".into())
@@ -137,7 +191,12 @@ async fn translate_deepl(
     }
     Ok(translations
         .iter()
-        .map(|item| item.get("text").and_then(|value| value.as_str()).unwrap_or("").to_string())
+        .map(|item| {
+            item.get("text")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
         .collect())
 }
 
@@ -147,9 +206,8 @@ async fn translate_deeplx(
     texts: &[String],
     source_lang: &str,
     target_lang: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<TranslatedBlock>, String> {
     let url = deeplx_url(&config.base_url);
-    let source = deeplx_lang(source_lang, true);
     let target = deeplx_lang(target_lang, false);
     let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(DEEPLX_CONCURRENCY));
     let mut tasks = tokio::task::JoinSet::new();
@@ -157,23 +215,36 @@ async fn translate_deeplx(
         let client = client.clone();
         let url = url.clone();
         let key = config.api_key.clone();
-        let source = source.clone();
+        let configured = source_lang.to_string();
         let target = target.clone();
         let limit = limit.clone();
         tasks.spawn(async move {
-            let permit = limit.acquire_owned().await.map_err(|_| "翻译任务失败。".to_string())?;
-            let result = deeplx_one(&client, &url, &key, &text, &source, &target).await;
+            let permit = match limit.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => return (index, TranslatedBlock::failed("翻译任务失败。")),
+            };
+            let source = deeplx_source_for(&configured, &text);
+            let result = deeplx_one(&client, &url, &key, &text, source.as_deref(), &target).await;
             drop(permit);
-            result.map(|text| (index, text))
+            let block = match result {
+                Ok(text) => TranslatedBlock::ok(text),
+                Err(error) => TranslatedBlock::failed(error),
+            };
+            (index, block)
         });
     }
-    let mut slots = vec![String::new(); texts.len()];
+    let mut slots = vec![TranslatedBlock::failed("翻译任务失败。"); texts.len()];
     while let Some(joined) = tasks.join_next().await {
         match joined {
-            Ok(Ok((index, text))) => slots[index] = text,
-            Ok(Err(error)) => return Err(error),
-            Err(_) => return Err("翻译任务失败。".into()),
+            Ok((index, block)) => slots[index] = block,
+            Err(_) => {}
         }
+    }
+    if slots.iter().all(|block| block.error.is_some()) {
+        return Err(slots
+            .into_iter()
+            .find_map(|block| block.error)
+            .unwrap_or_else(|| "翻译失败。".into()));
     }
     Ok(slots)
 }
@@ -183,14 +254,18 @@ async fn deeplx_one(
     url: &str,
     key: &str,
     text: &str,
-    source_lang: &str,
+    source_lang: Option<&str>,
     target_lang: &str,
 ) -> Result<String, String> {
-    let body = json!({
+    let mut body = json!({
         "text": text,
-        "source_lang": source_lang,
         "target_lang": target_lang
     });
+    if let Some(source_lang) =
+        source_lang.filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("auto"))
+    {
+        body["source_lang"] = json!(source_lang);
+    }
     let payload = send_json(key, || {
         let request = client.post(url).json(&body);
         if key.is_empty() {
@@ -231,7 +306,14 @@ async fn translate_openai(
         Err(error) if fallback_allowed(&error) => {
             let mut output = Vec::with_capacity(texts.len());
             for text in texts {
-                let item = openai_once(client, config, std::slice::from_ref(text), source_lang, target_lang).await?;
+                let item = openai_once(
+                    client,
+                    config,
+                    std::slice::from_ref(text),
+                    source_lang,
+                    target_lang,
+                )
+                .await?;
                 output.push(item.into_iter().next().unwrap_or_default());
             }
             Ok(output)
@@ -272,7 +354,12 @@ async fn openai_once(
     parse_openai_items(content, texts.len())
 }
 
-fn openai_prompt(config: &TranslateConfig, texts: &[String], source_lang: &str, target_lang: &str) -> String {
+fn openai_prompt(
+    config: &TranslateConfig,
+    texts: &[String],
+    source_lang: &str,
+    target_lang: &str,
+) -> String {
     let items: Vec<Value> = texts
         .iter()
         .enumerate()
@@ -292,8 +379,14 @@ fn openai_prompt(config: &TranslateConfig, texts: &[String], source_lang: &str, 
 }
 
 fn parse_openai_items(content: &str, expected: usize) -> Result<Vec<String>, String> {
-    let content = content.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
-    let parsed: Value = serde_json::from_str(content).map_err(|_| "模型没有返回可解析的 JSON。".to_string())?;
+    let content = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let parsed: Value =
+        serde_json::from_str(content).map_err(|_| "模型没有返回可解析的 JSON。".to_string())?;
     let items = parsed
         .get("items")
         .and_then(|value| value.as_array())
@@ -315,7 +408,9 @@ fn parse_openai_items(content: &str, expected: usize) -> Result<Vec<String>, Str
         ordered.push(text);
     }
     if (1..=expected).all(|index| by_id.contains_key(&index.to_string())) {
-        return Ok((1..=expected).map(|index| by_id.remove(&index.to_string()).unwrap_or_default()).collect());
+        return Ok((1..=expected)
+            .map(|index| by_id.remove(&index.to_string()).unwrap_or_default())
+            .collect());
     }
     if ordered.len() == expected {
         return Ok(ordered);
@@ -323,12 +418,18 @@ fn parse_openai_items(content: &str, expected: usize) -> Result<Vec<String>, Str
     Err("模型返回的条目数量和原文不一致。".into())
 }
 
-async fn send_json(secret: &str, build: impl Fn() -> reqwest::RequestBuilder) -> Result<Value, String> {
+async fn send_json(
+    secret: &str,
+    build: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<Value, String> {
     let body = send_text(secret, build).await?;
     serde_json::from_str(&body).map_err(|_| "翻译接口返回了无法解析的内容。".to_string())
 }
 
-async fn send_text(secret: &str, build: impl Fn() -> reqwest::RequestBuilder) -> Result<String, String> {
+async fn send_text(
+    secret: &str,
+    build: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<String, String> {
     let mut last = "翻译请求失败。".to_string();
     for attempt in 0..2 {
         match build().send().await {
@@ -347,7 +448,8 @@ async fn send_text(secret: &str, build: impl Fn() -> reqwest::RequestBuilder) ->
             }
             Err(error) => {
                 last = redact(transport_error(&error), secret);
-                if attempt == 0 && (error.is_timeout() || error.is_connect() || error.is_request()) {
+                if attempt == 0 && (error.is_timeout() || error.is_connect() || error.is_request())
+                {
                     continue;
                 }
                 return Err(last);
@@ -425,7 +527,9 @@ fn deepl_auth(key: &str) -> String {
 
 fn deepl_base(base: &str) -> String {
     let base = with_scheme(base).trim_end_matches('/').to_string();
-    base.trim_end_matches("/v2/translate").trim_end_matches('/').to_string()
+    base.trim_end_matches("/v2/translate")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 fn deeplx_url(base: &str) -> String {
@@ -447,7 +551,10 @@ fn with_scheme(raw: &str) -> String {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_string()
-    } else if trimmed.contains("localhost") || trimmed.starts_with("127.") || trimmed.starts_with("[::1]") {
+    } else if trimmed.contains("localhost")
+        || trimmed.starts_with("127.")
+        || trimmed.starts_with("[::1]")
+    {
         format!("http://{trimmed}")
     } else {
         format!("https://{trimmed}")
@@ -489,6 +596,82 @@ pub fn deepl_source(value: &str) -> Option<String> {
     })
 }
 
+fn deeplx_source_for(configured: &str, text: &str) -> Option<String> {
+    let token = configured.trim();
+    if !token.is_empty() && !token.eq_ignore_ascii_case("auto") {
+        return Some(deeplx_lang(token, true));
+    }
+    detect_iso639_1(text)
+}
+
+fn detect_iso639_1(text: &str) -> Option<String> {
+    let mut cjk = 0usize;
+    let mut kana = 0usize;
+    let mut hangul = 0usize;
+    let mut letters = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '\u{3040}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}' => kana += 1,
+            '\u{ac00}'..='\u{d7af}' | '\u{1100}'..='\u{11ff}' => hangul += 1,
+            '\u{4e00}'..='\u{9fff}' => cjk += 1,
+            _ if ch.is_alphabetic() => letters += 1,
+            _ => {}
+        }
+    }
+    if kana > 0 && kana * 4 >= cjk {
+        return Some("JA".into());
+    }
+    if hangul > 0 && hangul * 4 >= cjk {
+        return Some("KO".into());
+    }
+    if cjk > 0 {
+        return Some("ZH".into());
+    }
+    if letters < 2 {
+        return None;
+    }
+    Some(whichlang_code(
+        whichlang::detect_language(text).three_letter_code(),
+    ))
+}
+
+fn whichlang_code(code: &str) -> String {
+    match code {
+        "cmn" | "zho" => "ZH",
+        "eng" => "EN",
+        "jpn" => "JA",
+        "kor" => "KO",
+        "deu" => "DE",
+        "fra" => "FR",
+        "spa" => "ES",
+        "por" => "PT",
+        "ita" => "IT",
+        "rus" => "RU",
+        "nld" => "NL",
+        "pol" => "PL",
+        "ukr" => "UK",
+        "ces" => "CS",
+        "swe" => "SV",
+        "dan" => "DA",
+        "fin" => "FI",
+        "hun" => "HU",
+        "ron" => "RO",
+        "ell" => "EL",
+        "bul" => "BG",
+        "tur" => "TR",
+        "ara" => "AR",
+        "heb" => "HE",
+        "tha" => "TH",
+        "vie" => "VI",
+        "ind" => "ID",
+        "hin" => "HI",
+        "fas" => "FA",
+        "nob" | "nno" | "nor" => "NB",
+        _ => "EN",
+    }
+    .into()
+}
+
 fn deeplx_lang(value: &str, source: bool) -> String {
     let token = value.trim().replace('_', "-");
     if token.is_empty() || token.eq_ignore_ascii_case("auto") {
@@ -496,7 +679,9 @@ fn deeplx_lang(value: &str, source: bool) -> String {
     }
     let upper = token.to_uppercase();
     match upper.as_str() {
-        "ZH" | "ZH-CN" | "ZH-SG" | "ZH-HANS" | "ZH-TW" | "ZH-HK" | "ZH-MO" | "ZH-HANT" => "ZH".into(),
+        "ZH" | "ZH-CN" | "ZH-SG" | "ZH-HANS" | "ZH-TW" | "ZH-HK" | "ZH-MO" | "ZH-HANT" => {
+            "ZH".into()
+        }
         "EN" | "EN-US" | "EN-GB" | "EN-UK" => "EN".into(),
         "PT-BR" | "PT-PT" => "PT".into(),
         "NB" | "NB-NO" | "NO" => "NB".into(),
@@ -522,17 +707,28 @@ fn language_label(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::State, http::StatusCode, routing::{get, post}, Json, Router};
+    use axum::{
+        extract::State,
+        http::StatusCode,
+        routing::{get, post},
+        Json, Router,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     async fn serve(router: Router) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let addr = listener.local_addr().expect("addr");
         tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
         format!("http://{addr}")
+    }
+
+    fn plain(items: Vec<TranslatedBlock>) -> Vec<String> {
+        items.into_iter().map(|item| item.text).collect()
     }
 
     fn config(provider: &str, base: &str, key: &str) -> TranslateConfig {
@@ -549,17 +745,34 @@ mod tests {
         seen: Arc<Mutex<Vec<Value>>>,
     }
 
-    async fn deepl_handler(State(state): State<Hits>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    async fn deepl_handler(
+        State(state): State<Hits>,
+        headers: axum::http::HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
         state.hits.fetch_add(1, Ordering::SeqCst);
-        let auth = headers.get("authorization").and_then(|value| value.to_str().ok()).unwrap_or("");
+        let auth = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
         if auth != format!("DeepL-Auth-Key {}", state.key) {
-            return Err((StatusCode::FORBIDDEN, Json(json!({"message": format!("bad {}", state.key)}))));
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({"message": format!("bad {}", state.key)})),
+            ));
         }
         if state.fail_first && state.hits.load(Ordering::SeqCst) == 1 {
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": state.key}))));
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"message": state.key})),
+            ));
         }
         state.seen.lock().expect("seen").push(body.clone());
-        let texts = body.get("text").and_then(|value| value.as_array()).cloned().unwrap_or_default();
+        let texts = body
+            .get("text")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
         let translations: Vec<Value> = texts
             .iter()
             .map(|item| json!({"detected_source_language": "EN", "text": format!("译:{}", item.as_str().unwrap_or(""))}))
@@ -577,14 +790,35 @@ mod tests {
         };
         let hits = state.hits.clone();
         let seen = state.seen.clone();
-        let base = serve(Router::new().route("/v2/translate", post(deepl_handler)).with_state(state)).await;
+        let base = serve(
+            Router::new()
+                .route("/v2/translate", post(deepl_handler))
+                .with_state(state),
+        )
+        .await;
         let config = config("deepl", &base, "deepl-secret");
-        let output = translate(&config, &["Hello".into(), "World".into()], "zh-CN", "en").await.expect("translate");
-        assert_eq!(output, vec!["译:Hello".to_string(), "译:World".to_string()]);
+        let output = translate(&config, &["Hello".into(), "World".into()], "zh-CN", "en")
+            .await
+            .expect("translate");
+        assert_eq!(
+            plain(output),
+            vec!["译:Hello".to_string(), "译:World".to_string()]
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
-        let body = seen.lock().expect("seen").last().cloned().unwrap_or_default();
-        assert_eq!(body.get("source_lang").and_then(|value| value.as_str()), Some("ZH"));
-        assert_eq!(body.get("target_lang").and_then(|value| value.as_str()), Some("EN-US"));
+        let body = seen
+            .lock()
+            .expect("seen")
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            body.get("source_lang").and_then(|value| value.as_str()),
+            Some("ZH")
+        );
+        assert_eq!(
+            body.get("target_lang").and_then(|value| value.as_str()),
+            Some("EN-US")
+        );
         let debug = format!("{config:?}");
         assert!(!debug.contains("deepl-secret"));
     }
@@ -598,10 +832,20 @@ mod tests {
             seen: Arc::new(Mutex::new(Vec::new())),
         };
         let hits = state.hits.clone();
-        let base = serve(Router::new().route("/v2/translate", post(deepl_handler)).with_state(state)).await;
-        let error = translate(&config("deepl", &base, "leaked-key-value"), &["Hi".into()], "en", "zh-CN")
-            .await
-            .expect_err("auth");
+        let base = serve(
+            Router::new()
+                .route("/v2/translate", post(deepl_handler))
+                .with_state(state),
+        )
+        .await;
+        let error = translate(
+            &config("deepl", &base, "leaked-key-value"),
+            &["Hi".into()],
+            "en",
+            "zh-CN",
+        )
+        .await
+        .expect_err("auth");
         assert!(error.contains("认证失败"));
         assert!(!error.contains("leaked-key-value"));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -609,21 +853,27 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deepl_usage_probe_succeeds() {
-        let base = serve(
-            Router::new().route(
-                "/v2/usage",
-                get(|headers: axum::http::HeaderMap| async move {
-                    let auth = headers.get("authorization").and_then(|value| value.to_str().ok()).unwrap_or("");
-                    if auth == "DeepL-Auth-Key usage-key" {
-                        (StatusCode::OK, Json(json!({"character_count": 1, "character_limit": 10})))
-                    } else {
-                        (StatusCode::FORBIDDEN, Json(json!({"message": "no"})))
-                    }
-                }),
-            ),
-        )
+        let base = serve(Router::new().route(
+            "/v2/usage",
+            get(|headers: axum::http::HeaderMap| async move {
+                let auth = headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("");
+                if auth == "DeepL-Auth-Key usage-key" {
+                    (
+                        StatusCode::OK,
+                        Json(json!({"character_count": 1, "character_limit": 10})),
+                    )
+                } else {
+                    (StatusCode::FORBIDDEN, Json(json!({"message": "no"})))
+                }
+            }),
+        ))
         .await;
-        let message = test_connection(&config("deepl", &base, "usage-key")).await.expect("usage");
+        let message = test_connection(&config("deepl", &base, "usage-key"))
+            .await
+            .expect("usage");
         assert!(message.contains("连接成功"));
     }
 
@@ -636,16 +886,27 @@ mod tests {
         auths: Arc<Mutex<Vec<String>>>,
     }
 
-    async fn deeplx_handler(State(state): State<DeeplxState>, headers: axum::http::HeaderMap, Json(body): Json<Value>) -> Json<Value> {
+    async fn deeplx_handler(
+        State(state): State<DeeplxState>,
+        headers: axum::http::HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
         let now = state.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         state.max_in_flight.fetch_max(now, Ordering::SeqCst);
         state.hits.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(40)).await;
         state.in_flight.fetch_sub(1, Ordering::SeqCst);
         state.seen.lock().expect("seen").push(body.clone());
-        let auth = headers.get("authorization").and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
+        let auth = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         state.auths.lock().expect("auths").push(auth);
-        let text = body.get("text").and_then(|value| value.as_str()).unwrap_or("");
+        let text = body
+            .get("text")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         Json(json!({"code": 200, "data": format!("X:{text}")}))
     }
 
@@ -661,17 +922,37 @@ mod tests {
         let max_in_flight = state.max_in_flight.clone();
         let seen = state.seen.clone();
         let auths = state.auths.clone();
-        let base = serve(Router::new().route("/deeplx", post(deeplx_handler)).with_state(state)).await;
+        let base = serve(
+            Router::new()
+                .route("/deeplx", post(deeplx_handler))
+                .with_state(state),
+        )
+        .await;
         let texts: Vec<String> = (0..8).map(|index| format!("t{index}")).collect();
-        let output = translate(&config("deeplx", &format!("{base}/deeplx"), "deeplx-token"), &texts, "auto", "zh-CN")
-            .await
-            .expect("deeplx");
-        assert_eq!(output, texts.iter().map(|text| format!("X:{text}")).collect::<Vec<_>>());
+        let output = translate(
+            &config("deeplx", &format!("{base}/deeplx"), "deeplx-token"),
+            &texts,
+            "en",
+            "zh-CN",
+        )
+        .await
+        .expect("deeplx");
+        assert_eq!(
+            plain(output),
+            texts
+                .iter()
+                .map(|text| format!("X:{text}"))
+                .collect::<Vec<_>>()
+        );
         let max = max_in_flight.load(Ordering::SeqCst);
         assert!(max >= 2 && max <= DEEPLX_CONCURRENCY, "max in flight {max}");
         let bodies = seen.lock().expect("seen");
-        assert!(bodies.iter().all(|body| body.get("source_lang").and_then(|value| value.as_str()) == Some("auto")));
-        assert!(bodies.iter().all(|body| body.get("target_lang").and_then(|value| value.as_str()) == Some("ZH")));
+        assert!(bodies
+            .iter()
+            .all(|body| body.get("source_lang").and_then(|value| value.as_str()) == Some("EN")));
+        assert!(bodies
+            .iter()
+            .all(|body| body.get("target_lang").and_then(|value| value.as_str()) == Some("ZH")));
         let auths = auths.lock().expect("auths");
         assert!(auths.iter().all(|value| value == "Bearer deeplx-token"));
     }
@@ -690,17 +971,32 @@ mod tests {
         Json(body): Json<Value>,
     ) -> Result<Json<Value>, StatusCode> {
         state.hits.fetch_add(1, Ordering::SeqCst);
-        let content = body.pointer("/messages/1/content").and_then(|value| value.as_str()).unwrap_or("").to_string();
-        state.seen.lock().expect("seen").push((uri.path().to_string(), content.clone()));
-        let auth = headers.get("authorization").and_then(|value| value.to_str().ok()).unwrap_or("");
+        let content = body
+            .pointer("/messages/1/content")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+        state
+            .seen
+            .lock()
+            .expect("seen")
+            .push((uri.path().to_string(), content.clone()));
+        let auth = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
         if auth != "Bearer openai-secret" {
             return Err(StatusCode::UNAUTHORIZED);
         }
         if state.mode == "batch-broken" && content.contains("\"id\":\"2\"") {
-            return Ok(Json(json!({"choices": [{"message": {"content": "not json"}}]})));
+            return Ok(Json(
+                json!({"choices": [{"message": {"content": "not json"}}]}),
+            ));
         }
         if state.mode == "shuffled" {
-            return Ok(Json(json!({"choices": [{"message": {"content": "{\"items\":[{\"id\":\"2\",\"text\":\"二\"},{\"id\":\"1\",\"text\":\"一\"}]}"}}]})));
+            return Ok(Json(
+                json!({"choices": [{"message": {"content": "{\"items\":[{\"id\":\"2\",\"text\":\"二\"},{\"id\":\"1\",\"text\":\"一\"}]}"}}]}),
+            ));
         }
         let parsed = content.split("items=").nth(1).unwrap_or("[]");
         let items: Value = serde_json::from_str(parsed).unwrap_or_else(|_| json!([]));
@@ -716,8 +1012,11 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-        let payload = serde_json::to_string(&json!({"items": translated})).unwrap_or_else(|_| "{}".into());
-        Ok(Json(json!({"choices": [{"message": {"content": payload}}]})))
+        let payload =
+            serde_json::to_string(&json!({"items": translated})).unwrap_or_else(|_| "{}".into());
+        Ok(Json(
+            json!({"choices": [{"message": {"content": payload}}]}),
+        ))
     }
 
     fn openai_router(state: OpenAiState) -> Router {
@@ -739,11 +1038,18 @@ mod tests {
         let base = serve(openai_router(state)).await;
         let mut config = config("openai", &format!("{base}/v1"), "openai-secret");
         config.prompt = "keep names".into();
-        let output = translate(&config, &["甲".into(), "乙".into()], "zh-CN", "en").await.expect("openai");
-        assert_eq!(output, vec!["一".to_string(), "二".to_string()]);
+        let output = translate(&config, &["甲".into(), "乙".into()], "zh-CN", "en")
+            .await
+            .expect("openai");
+        assert_eq!(plain(output), vec!["一".to_string(), "二".to_string()]);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         let seen = seen.lock().expect("seen");
-        assert!(seen.iter().all(|(url, content)| url == "/v1/chat/completions" && content.contains("keep names")), "{seen:?}");
+        assert!(
+            seen.iter()
+                .all(|(url, content)| url == "/v1/chat/completions"
+                    && content.contains("keep names")),
+            "{seen:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -755,10 +1061,15 @@ mod tests {
         };
         let hits = state.hits.clone();
         let base = serve(openai_router(state)).await;
-        let output = translate(&config("openai", &base, "openai-secret"), &["A".into(), "B".into()], "en", "zh-CN")
-            .await
-            .expect("fallback");
-        assert_eq!(output, vec!["译A".to_string(), "译B".to_string()]);
+        let output = translate(
+            &config("openai", &base, "openai-secret"),
+            &["A".into(), "B".into()],
+            "en",
+            "zh-CN",
+        )
+        .await
+        .expect("fallback");
+        assert_eq!(plain(output), vec!["译A".to_string(), "译B".to_string()]);
         assert_eq!(hits.load(Ordering::SeqCst), 3);
     }
 
@@ -766,23 +1077,23 @@ mod tests {
     async fn timeout_is_retried_once() {
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = hits.clone();
-        let base = serve(
-            Router::new().route(
-                "/v2/translate",
-                post(move || {
-                    let counter = counter.clone();
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        Json(json!({"translations": []}))
-                    }
-                }),
-            ),
-        )
+        let base = serve(Router::new().route(
+            "/v2/translate",
+            post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    Json(json!({"translations": []}))
+                }
+            }),
+        ))
         .await;
         let mut config = config("deepl", &base, "slow-key");
         config.timeout = Duration::from_millis(150);
-        let error = translate(&config, &["Hi".into()], "en", "zh-CN").await.expect_err("timeout");
+        let error = translate(&config, &["Hi".into()], "en", "zh-CN")
+            .await
+            .expect_err("timeout");
         assert!(error.contains("超时"), "{error}");
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
@@ -800,12 +1111,174 @@ mod tests {
     async fn live_linguaspark_deeplx() {
         let mut config = config("deeplx", "http://127.0.0.1:7100/deeplx", "");
         config.timeout = Duration::from_secs(20);
-        let output = translate(&config, &["Hello world".into(), "Good morning".into()], "en", "zh-CN")
-            .await
-            .expect("linguaspark");
+        let output = translate(
+            &config,
+            &["Hello world".into(), "Good morning".into()],
+            "en",
+            "zh-CN",
+        )
+        .await
+        .expect("linguaspark");
         assert_eq!(output.len(), 2);
-        assert!(output[0].contains('你'), "{output:?}");
-        assert!(!output[1].is_empty(), "{output:?}");
+        assert!(output[0].text.contains('你'), "{output:?}");
+        assert!(!output[1].text.is_empty(), "{output:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deepl_auto_omits_source_lang() {
+        let state = Hits {
+            hits: Arc::new(AtomicUsize::new(0)),
+            fail_first: false,
+            key: "deepl-secret".into(),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        };
+        let seen = state.seen.clone();
+        let base = serve(
+            Router::new()
+                .route("/v2/translate", post(deepl_handler))
+                .with_state(state),
+        )
+        .await;
+        let _ = translate(
+            &config("deepl", &base, "deepl-secret"),
+            &["你好，今天天气很好。".into()],
+            "auto",
+            "en",
+        )
+        .await
+        .expect("deepl auto");
+        let body = seen
+            .lock()
+            .expect("seen")
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        assert!(body.get("source_lang").is_none(), "{body}");
+        assert_eq!(
+            body.get("target_lang").and_then(|value| value.as_str()),
+            Some("EN-US")
+        );
+    }
+
+    async fn strict_deeplx(
+        Json(body): Json<Value>,
+    ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+        let source = body
+            .get("source_lang")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let text = body
+            .get("text")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if source.is_empty()
+            || source.eq_ignore_ascii_case("auto")
+            || source.eq_ignore_ascii_case("cmn")
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(
+                    json!({"message": format!("Translation from '{source}' to 'en' is not supported")}),
+                ),
+            ));
+        }
+        if text.contains("FAIL") {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"message": "block failed"})),
+            ));
+        }
+        Ok(Json(json!({"code": 200, "data": format!("ok:{text}")})))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deeplx_auto_sends_detected_code_and_keeps_other_blocks() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        let base = serve(Router::new().route(
+            "/deeplx",
+            post(move |body: Json<Value>| {
+                let seen = recorded.clone();
+                async move {
+                    seen.lock().expect("seen").push(body.0.clone());
+                    strict_deeplx(body).await
+                }
+            }),
+        ))
+        .await;
+        let output = translate(
+            &config("deeplx", &format!("{base}/deeplx"), ""),
+            &[
+                "你好，今天天气很好。".into(),
+                "FAIL this block".into(),
+                "Hello world, this is a screenshot translation tool.".into(),
+            ],
+            "auto",
+            "en",
+        )
+        .await
+        .expect("partial");
+        assert!(output[0].error.is_none(), "{output:?}");
+        assert!(output[0].text.contains("你好"), "{output:?}");
+        assert!(
+            output[1]
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("block failed"),
+            "{output:?}"
+        );
+        assert!(
+            output[2].error.is_none() && output[2].text.contains("Hello"),
+            "{output:?}"
+        );
+        let bodies = seen.lock().expect("seen");
+        let source_of = |needle: &str| {
+            bodies.iter().find_map(|body| {
+                let text = body
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                text.contains(needle).then(|| {
+                    body.get("source_lang")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                })
+            })
+        };
+        assert_eq!(source_of("你好"), Some("ZH"), "{bodies:?}");
+        assert_eq!(source_of("Hello world"), Some("EN"), "{bodies:?}");
+        assert_eq!(source_of("FAIL"), Some("EN"), "{bodies:?}");
+        assert!(bodies
+            .iter()
+            .all(|body| body.get("source_lang").and_then(|value| value.as_str()) != Some("auto")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openai_auto_asks_the_model_to_detect() {
+        let state = OpenAiState {
+            hits: Arc::new(AtomicUsize::new(0)),
+            mode: "ok",
+            seen: Arc::new(Mutex::new(Vec::new())),
+        };
+        let seen = state.seen.clone();
+        let base = serve(openai_router(state)).await;
+        let _ = translate(
+            &config("openai", &base, "openai-secret"),
+            &["你好，今天天气很好。".into()],
+            "auto",
+            "en",
+        )
+        .await
+        .expect("openai auto");
+        let prompt = seen
+            .lock()
+            .expect("seen")
+            .last()
+            .map(|(_, content)| content.clone())
+            .unwrap_or_default();
+        assert!(prompt.contains("source_lang=auto-detect"), "{prompt}");
+        assert!(!prompt.contains("Simplified Chinese (auto)"), "{prompt}");
     }
 
     #[test]
@@ -817,8 +1290,29 @@ mod tests {
         assert_eq!(deepl_source("en-GB").as_deref(), Some("EN"));
         assert_eq!(deeplx_lang("zh-CN", false), "ZH");
         assert_eq!(deeplx_lang("auto", true), "auto");
+        assert_eq!(
+            deeplx_source_for("auto", "你好，今天天气很好。").as_deref(),
+            Some("ZH")
+        );
+        assert_eq!(
+            deeplx_source_for(
+                "auto",
+                "Hello world, this is a screenshot translation tool."
+            )
+            .as_deref(),
+            Some("EN")
+        );
+        assert_eq!(deeplx_source_for("zh-CN", "hello").as_deref(), Some("ZH"));
+        assert_eq!(deeplx_source_for("auto", "。。").as_deref(), None);
+        assert_eq!(language_label("auto"), "auto-detect");
         assert_eq!(deeplx_lang("ja", false), "JA");
-        assert_eq!(openai_url("https://api.openai.com"), "https://api.openai.com/v1/chat/completions");
-        assert_eq!(openai_url("https://example.com/v1/"), "https://example.com/v1/chat/completions");
+        assert_eq!(
+            openai_url("https://api.openai.com"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_url("https://example.com/v1/"),
+            "https://example.com/v1/chat/completions"
+        );
     }
 }

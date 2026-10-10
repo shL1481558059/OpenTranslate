@@ -5,6 +5,7 @@ const controlsEl = document.getElementById('controls');
 const extractSourceBtn = document.getElementById('extractSource');
 const extractTranslatedBtn = document.getElementById('extractTranslated');
 const closeBtn = document.getElementById('close');
+const toastEl = document.getElementById('toast');
 const ACTION_BUTTON_WIDTH = 82;
 const CONTROL_PADDING = 4;
 const CONTROL_GAP = 4;
@@ -51,7 +52,6 @@ const BUTTON_FEEDBACK_LABELS = {
   }
 };
 
-let ignoreMouseEvents = true;
 let extractionState = {
   sourceText: '',
   translatedText: ''
@@ -137,22 +137,6 @@ function getOverlayMode(payload) {
     return 'error';
   }
   return 'result';
-}
-
-function isPointInsideBounds(pointX, pointY, bounds) {
-  return pointX >= bounds.left && pointX <= bounds.right && pointY >= bounds.top && pointY <= bounds.bottom;
-}
-
-async function syncIgnoreMouseEvents(next) {
-  if (ignoreMouseEvents === next) {
-    return;
-  }
-  ignoreMouseEvents = next;
-  try {
-    await window.snapTranslate.setOverlayIgnoreMouseEvents(next);
-  } catch {
-    // ignore
-  }
 }
 
 function applySelectionViewport(payload) {
@@ -345,7 +329,6 @@ function renderBlocks(payload) {
   applySnapshot(payload);
   applyExtractionState(payload);
   applyControlViewport(payload);
-  void syncIgnoreMouseEvents(true);
 
   if (mask) {
     mask.style.display = payload && payload.mask === false ? 'none' : 'block';
@@ -427,12 +410,30 @@ function reportOverlayMetrics(payload) {
   });
 }
 
+function showToast(message) {
+  if (!toastEl) {
+    return;
+  }
+  toastEl.textContent = message;
+  toastEl.hidden = false;
+  const anchor = controlsEl?.getBoundingClientRect();
+  if (anchor && anchor.width) {
+    toastEl.style.left = `${Math.max(0, anchor.left)}px`;
+    toastEl.style.top = `${anchor.bottom + 8}px`;
+  }
+  clearTimeout(toastEl._timer);
+  toastEl._timer = window.setTimeout(() => {
+    toastEl.hidden = true;
+  }, 1400);
+}
+
 function flashActionFeedback(button, kind, status) {
   if (!button) {
     return;
   }
   clearTimeout(button._feedbackTimer);
   applyActionButtonCopy(button, BUTTON_FEEDBACK_LABELS[status], BUTTON_FEEDBACK_LABELS[status].state);
+  showToast(BUTTON_FEEDBACK_LABELS[status].label);
   button._feedbackTimer = window.setTimeout(() => {
     if (!button.hidden) {
       resetActionButton(button, kind);
@@ -470,20 +471,6 @@ extractSourceBtn.addEventListener('click', async () => {
 
 extractTranslatedBtn.addEventListener('click', async () => {
   await copyExtractionText('translated');
-});
-
-window.addEventListener('mousemove', (event) => {
-  if (!controlsEl || controlsEl.style.display === 'none') {
-    void syncIgnoreMouseEvents(true);
-    return;
-  }
-  const bounds = controlsEl.getBoundingClientRect();
-  const hovering = isPointInsideBounds(event.clientX, event.clientY, bounds);
-  void syncIgnoreMouseEvents(!hovering);
-});
-
-window.addEventListener('mouseleave', () => {
-  void syncIgnoreMouseEvents(true);
 });
 
 window.addEventListener('keydown', async (event) => {

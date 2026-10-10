@@ -10,6 +10,9 @@ const DET_LIMIT: u32 = 960;
 const DET_THRESH: f32 = 0.3;
 const BOX_THRESH: f32 = 0.45;
 const REC_HEIGHT: u32 = 48;
+// Real lines on the desktop samples sit around 0.95. Weak CTC peaks are how a
+// blank crop turns into a dictionary word, so drop anything below this.
+const REC_MIN_CONFIDENCE: f32 = 0.55;
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
@@ -83,9 +86,9 @@ pub fn recognize(image: &RgbaImage) -> Result<OcrOutput, String> {
     let boxes = detect(&mut engine, image)?;
     let mut blocks = Vec::new();
     for (index, bbox) in boxes.into_iter().enumerate() {
-        let text = recognize_box(&mut engine, image, bbox)?;
+        let (text, confidence) = recognize_box(&mut engine, image, bbox)?;
         let text = text.trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() || confidence < REC_MIN_CONFIDENCE || !looks_like_text(&text) {
             continue;
         }
         let lines = text
@@ -257,7 +260,12 @@ fn boxes_from_map(map: &[f32], width: usize, height: usize) -> Vec<BBox> {
         .collect()
 }
 
-fn neighbors(x: usize, y: usize, width: usize, height: usize) -> impl Iterator<Item = (usize, usize)> {
+fn neighbors(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+) -> impl Iterator<Item = (usize, usize)> {
     let mut items = Vec::with_capacity(4);
     if x > 0 {
         items.push((x - 1, y));
@@ -299,7 +307,11 @@ fn merge_line_boxes(mut boxes: Vec<BBox>) -> Vec<BBox> {
     merged
 }
 
-fn recognize_box(engine: &mut Engine, image: &RgbaImage, bbox: BBox) -> Result<String, String> {
+fn recognize_box(
+    engine: &mut Engine,
+    image: &RgbaImage,
+    bbox: BBox,
+) -> Result<(String, f32), String> {
     let x = bbox.x.clamp(0, image.width() as i32 - 1) as u32;
     let y = bbox.y.clamp(0, image.height() as i32 - 1) as u32;
     let width = (bbox.width as u32).clamp(1, image.width().saturating_sub(x));
@@ -336,7 +348,7 @@ fn recognize_box(engine: &mut Engine, image: &RgbaImage, bbox: BBox) -> Result<S
     decode_ctc(&engine.keys, shape.as_ref(), data)
 }
 
-fn decode_ctc(keys: &[String], shape: &[i64], data: &[f32]) -> Result<String, String> {
+fn decode_ctc(keys: &[String], shape: &[i64], data: &[f32]) -> Result<(String, f32), String> {
     if shape.len() < 2 {
         return Err(format!("unexpected rec shape {shape:?}"));
     }
@@ -346,32 +358,122 @@ fn decode_ctc(keys: &[String], shape: &[i64], data: &[f32]) -> Result<String, St
         (shape[0] as usize, shape[1] as usize)
     };
     if time == 0 || classes == 0 || data.len() < time * classes {
-        return Ok(String::new());
+        return Ok((String::new(), 0.0));
     }
     let mut text = String::new();
     let mut previous = 0usize;
+    let mut confidence_sum = 0f32;
+    let mut confidence_count = 0usize;
     for step in 0..time {
         let row = &data[step * classes..(step + 1) * classes];
-        let mut best = 0usize;
-        let mut best_value = f32::MIN;
-        for (index, value) in row.iter().enumerate() {
-            if *value > best_value {
-                best_value = *value;
-                best = index;
-            }
-        }
+        let (best, probability) = class_choice(row);
         if best != 0 && best != previous {
             if let Some(symbol) = keys.get(best - 1) {
                 text.push_str(symbol);
             } else if best == keys.len() + 1 {
                 text.push(' ');
             }
+            confidence_sum += probability;
+            confidence_count += 1;
         }
         previous = best;
     }
-    Ok(text)
+    let confidence = if confidence_count == 0 {
+        0.0
+    } else {
+        confidence_sum / confidence_count as f32
+    };
+    Ok((text, confidence))
+}
+
+fn class_choice(row: &[f32]) -> (usize, f32) {
+    let mut best = 0usize;
+    let mut best_value = f32::MIN;
+    let mut sum = 0f32;
+    let mut min_value = f32::MAX;
+    for (index, value) in row.iter().enumerate() {
+        if *value > best_value {
+            best_value = *value;
+            best = index;
+        }
+        min_value = min_value.min(*value);
+        sum += *value;
+    }
+    // PP-OCRv4 recognition already emits a probability distribution. Softmax on
+    // those values collapses toward zero because thousands of near-zero classes
+    // still contribute.
+    let probability = if min_value >= -0.001 && (sum - 1.0).abs() < 0.2 {
+        best_value.clamp(0.0, 1.0)
+    } else {
+        let mut denom = 0f32;
+        for value in row {
+            denom += (value - best_value).exp();
+        }
+        if denom == 0.0 {
+            0.0
+        } else {
+            1.0 / denom
+        }
+    };
+    (best, probability)
+}
+
+fn looks_like_text(text: &str) -> bool {
+    text.chars().any(|ch| ch.is_alphanumeric())
 }
 
 fn _path_hint(path: &Path) -> String {
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn blank_crops_are_not_text() {
+        let mut loaded = engine().expect("engine");
+        for (width, height, color) in [
+            (220u32, 40u32, [248u8, 248, 246, 255]),
+            (480, 64, [255, 255, 255, 255]),
+            (120, 28, [230, 230, 230, 255]),
+            (360, 48, [20, 22, 26, 255]),
+            (640, 80, [245, 243, 238, 255]),
+        ] {
+            let image = RgbaImage::from_pixel(width, height, Rgba(color));
+            let bbox = BBox {
+                x: 0,
+                y: 0,
+                width: width as i32,
+                height: height as i32,
+            };
+            let (text, confidence) = recognize_box(&mut loaded, &image, bbox).expect("rec");
+            assert!(
+                text.trim().is_empty() || confidence < REC_MIN_CONFIDENCE,
+                "{width}x{height} {confidence} {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_and_flat_color_have_no_text() {
+        for color in [
+            Rgba([255, 255, 255, 255]),
+            Rgba([244, 246, 248, 255]),
+            Rgba([32, 36, 42, 255]),
+        ] {
+            let image = RgbaImage::from_pixel(640, 360, color);
+            let output = recognize(&image).expect("ocr");
+            assert!(
+                output.blocks.is_empty(),
+                "color {color:?} produced {:?}",
+                output
+                    .blocks
+                    .iter()
+                    .map(|block| &block.text)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 }
