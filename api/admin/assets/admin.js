@@ -454,6 +454,71 @@ saveBtn.addEventListener('click', async () => {
   }
 });
 
+const translateSourceEl = document.getElementById('translateSource');
+const translateTargetEl = document.getElementById('translateTarget');
+const translateTextEl = document.getElementById('translateText');
+const translateResultEl = document.getElementById('translateResult');
+const translateBtn = document.getElementById('translateBtn');
+const usageBtn = document.getElementById('usageBtn');
+
+async function runDeepLTranslate() {
+  const text = String(translateTextEl?.value || '');
+  const targetLang = String(translateTargetEl?.value || '').trim();
+  const sourceLang = String(translateSourceEl?.value || '').trim();
+  const payload = {
+    text: text.split(/\r?\n/).filter((line) => line.length > 0),
+    target_lang: targetLang
+  };
+  if (!payload.text.length) {
+    payload.text = [text];
+  }
+  if (sourceLang) {
+    payload.source_lang = sourceLang;
+  }
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) {
+    headers.Authorization = `DeepL-Auth-Key ${token}`;
+  }
+  const response = await fetch('/v2/translate', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload)
+  });
+  const body = await response.json();
+  if (translateResultEl) {
+    translateResultEl.textContent = JSON.stringify(body, null, 2);
+  }
+  if (!response.ok) {
+    throw new Error(body?.message || `request_failed:${response.status}`);
+  }
+  setStatus('翻译完成', 'success');
+}
+
+if (translateBtn) {
+  translateBtn.addEventListener('click', async () => {
+    setStatus('翻译中…', 'loading', { indeterminate: true });
+    try {
+      await runDeepLTranslate();
+    } catch (error) {
+      setErrorStatus('翻译失败', error);
+    }
+  });
+}
+
+if (usageBtn) {
+  usageBtn.addEventListener('click', async () => {
+    try {
+      const usage = await apiFetch('/v2/usage');
+      if (translateResultEl) {
+        translateResultEl.textContent = JSON.stringify(usage, null, 2);
+      }
+      setStatus('已读取用量', 'success');
+    } catch (error) {
+      setErrorStatus('读取用量失败', error);
+    }
+  });
+}
+
 downloadCustomMarian.addEventListener('click', async () => {
   const modelId = customMarianId.value.trim();
   if (!modelId) {

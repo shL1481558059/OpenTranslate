@@ -4,6 +4,34 @@ const path = require('node:path');
 const CONFIG_PATH = path.resolve(__dirname, 'config.json');
 const EXTERNAL_ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || '').trim();
 
+function captureStartupEnv(env = process.env) {
+  const pick = (key) => {
+    const value = env[key];
+    if (value === undefined || value === null || String(value).trim() === '') {
+      return undefined;
+    }
+    return String(value);
+  };
+  return {
+    TRANSLATION_ENGINE: pick('TRANSLATION_ENGINE'),
+    LOCAL_TRANSLATE_MODEL_DIR: pick('LOCAL_TRANSLATE_MODEL_DIR'),
+    LOCAL_MARIAN_MODEL_DIR: pick('LOCAL_MARIAN_MODEL_DIR'),
+    LOCAL_TRANSLATE_PYTHON: pick('LOCAL_TRANSLATE_PYTHON'),
+    LOCAL_TRANSLATE_VENV: pick('LOCAL_TRANSLATE_VENV'),
+    LOCAL_TRANSLATE_TIMEOUT_MS: pick('LOCAL_TRANSLATE_TIMEOUT_MS'),
+    MARIAN_MODEL_ID: pick('MARIAN_MODEL_ID'),
+    MARIAN_DEVICE: pick('MARIAN_DEVICE'),
+    MARIAN_DTYPE: pick('MARIAN_DTYPE'),
+    MARIAN_MAX_TOKENS: pick('MARIAN_MAX_TOKENS'),
+    MARIAN_HF_ENDPOINT: pick('MARIAN_HF_ENDPOINT'),
+    HF_ENDPOINT: pick('HF_ENDPOINT'),
+    MARIAN_HF_DISABLE_SSL_VERIFY: pick('MARIAN_HF_DISABLE_SSL_VERIFY'),
+    HF_HUB_DISABLE_SSL_VERIFICATION: pick('HF_HUB_DISABLE_SSL_VERIFICATION')
+  };
+}
+
+const STARTUP_ENV = captureStartupEnv();
+
 const DEFAULT_MARIAN_MODEL = 'Helsinki-NLP/opus-mt-en-zh';
 
 function normalizeEngine(value, fallback = 'argos') {
@@ -127,12 +155,57 @@ function sanitizeConfig(input, fallback) {
   return next;
 }
 
-function applyEnvOverrides(config) {
+function applyStartupValue(envSnapshot, key) {
+  if (!envSnapshot || envSnapshot[key] === undefined) return undefined;
+  return envSnapshot[key];
+}
+
+function applyEnvOverrides(config, envSnapshot = STARTUP_ENV) {
   if (!config) return config;
   const next = deepMerge(config, {});
+  next.local = next.local || {};
+  next.marian = next.marian || {};
+  next.admin = next.admin || {};
   // Only honor startup-provided ADMIN_TOKEN so runtime updates are not locked by old values.
   if (EXTERNAL_ADMIN_TOKEN) {
     next.admin.token = EXTERNAL_ADMIN_TOKEN;
+  }
+  // Values present in the environment at process start win over api/config.json.
+  const engine = applyStartupValue(envSnapshot, 'TRANSLATION_ENGINE');
+  if (engine !== undefined) {
+    next.engine = normalizeEngine(engine, next.engine || 'argos');
+  }
+  const argosModelDir = applyStartupValue(envSnapshot, 'LOCAL_TRANSLATE_MODEL_DIR');
+  if (argosModelDir !== undefined) next.local.argosModelDir = argosModelDir;
+  const marianModelDir = applyStartupValue(envSnapshot, 'LOCAL_MARIAN_MODEL_DIR');
+  if (marianModelDir !== undefined) next.local.marianModelDir = marianModelDir;
+  const pythonPath = applyStartupValue(envSnapshot, 'LOCAL_TRANSLATE_PYTHON');
+  if (pythonPath !== undefined) next.local.pythonPath = pythonPath;
+  const venvDir = applyStartupValue(envSnapshot, 'LOCAL_TRANSLATE_VENV');
+  if (venvDir !== undefined) next.local.venvDir = venvDir;
+  const timeoutMs = applyStartupValue(envSnapshot, 'LOCAL_TRANSLATE_TIMEOUT_MS');
+  if (timeoutMs !== undefined) {
+    const num = Number(timeoutMs);
+    if (Number.isFinite(num) && num > 0) next.local.timeoutMs = Math.floor(num);
+  }
+  const modelId = applyStartupValue(envSnapshot, 'MARIAN_MODEL_ID');
+  if (modelId !== undefined) next.marian.modelId = modelId;
+  const device = applyStartupValue(envSnapshot, 'MARIAN_DEVICE');
+  if (device !== undefined) next.marian.device = device;
+  const dtype = applyStartupValue(envSnapshot, 'MARIAN_DTYPE');
+  if (dtype !== undefined) next.marian.dtype = dtype;
+  const maxTokens = applyStartupValue(envSnapshot, 'MARIAN_MAX_TOKENS');
+  if (maxTokens !== undefined) {
+    const num = Number(maxTokens);
+    if (Number.isFinite(num) && num > 0) next.marian.maxTokens = Math.floor(num);
+  }
+  const hfEndpoint = applyStartupValue(envSnapshot, 'MARIAN_HF_ENDPOINT')
+    ?? applyStartupValue(envSnapshot, 'HF_ENDPOINT');
+  if (hfEndpoint !== undefined) next.marian.hfEndpoint = hfEndpoint;
+  const sslFlag = applyStartupValue(envSnapshot, 'MARIAN_HF_DISABLE_SSL_VERIFY')
+    ?? applyStartupValue(envSnapshot, 'HF_HUB_DISABLE_SSL_VERIFICATION');
+  if (sslFlag !== undefined) {
+    next.marian.hfDisableSslVerify = parseBoolean(sslFlag, next.marian.hfDisableSslVerify);
   }
   return next;
 }
@@ -228,6 +301,7 @@ module.exports = {
   getAdminToken,
   writeJsonAtomic,
   __private: {
-    applyEnvOverrides
+    applyEnvOverrides,
+    captureStartupEnv
   }
 };

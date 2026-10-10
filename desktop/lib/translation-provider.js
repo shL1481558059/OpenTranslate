@@ -5,11 +5,54 @@ const MAX_RETRIES = 1;
 
 const DEFAULTS = {
   engine: (process.env.DESKTOP_TRANSLATION_ENGINE || 'api').toLowerCase(),
-  translationApiUrl: process.env.TRANSLATION_API_URL || 'http://127.0.0.1:8787/v1/translate',
+  translationApiUrl: process.env.TRANSLATION_API_URL || 'http://127.0.0.1:8787/v2/translate',
   llmApiUrl: process.env.LLM_API_URL || 'https://api.openai.com/v1',
   llmApiKey: process.env.LLM_API_KEY || '',
   llmModel: process.env.LLM_MODEL || 'gpt-4o-mini'
 };
+
+const TARGET_ALIASES = {
+  EN: 'EN-US',
+  'ZH-CN': 'ZH',
+  'ZH-SG': 'ZH',
+  'ZH-TW': 'ZH-HANT',
+  'ZH-HK': 'ZH-HANT',
+  'ZH-MO': 'ZH-HANT',
+  'EN-UK': 'EN-GB',
+  NO: 'NB'
+};
+
+const SOURCE_ALIASES = {
+  'ZH-CN': 'ZH',
+  'ZH-SG': 'ZH',
+  'ZH-HANS': 'ZH',
+  'ZH-TW': 'ZH',
+  'ZH-HK': 'ZH',
+  'ZH-HANT': 'ZH',
+  'EN-US': 'EN',
+  'EN-GB': 'EN',
+  'PT-BR': 'PT',
+  'PT-PT': 'PT',
+  NO: 'NB'
+};
+
+function canonicalLang(value) {
+  return String(value || '')
+    .trim()
+    .replace(/_/g, '-')
+    .toUpperCase();
+}
+
+function toDeepLTarget(value) {
+  const token = canonicalLang(value || 'ZH');
+  return TARGET_ALIASES[token] || token || 'ZH';
+}
+
+function toDeepLSource(value) {
+  const token = canonicalLang(value);
+  if (!token || token === 'AUTO') return null;
+  return SOURCE_ALIASES[token] || token;
+}
 
 function normalizeConfig(config) {
   let engine = (config?.engine || DEFAULTS.engine || 'api').toLowerCase();
@@ -34,7 +77,13 @@ function isRetryableError(error) {
   if (code === 'rate_limited') {
     return true;
   }
-  if (/translation_api_5\d{2}/.test(message) || /llm_api_(429|5\d{2})/.test(message)) {
+  if (code === 'translation_api_429' || code === 'translation_api_500' || code === 'translation_api_504' || code === 'translation_api_529') {
+    return true;
+  }
+  if (error?.status === 429 || error?.status === 500 || error?.status === 504 || error?.status === 529) {
+    return true;
+  }
+  if (/translation_api_(429|500|504|529)/.test(message) || /llm_api_(429|5\d{2})/.test(message)) {
     return true;
   }
   if (/fetch failed|network|socket|econn|eai_again|timed out|timeout/i.test(message)) {
@@ -72,23 +121,14 @@ async function callTranslateApi(payload, config) {
         } catch {
           errorPayload = null;
         }
-        if (errorPayload?.error_code) {
-          const err = new Error(String(errorPayload.error_code));
-          err.code = errorPayload.error_code;
-          err.meta = errorPayload.missing_model || null;
-          throw err;
-        }
-        throw new Error(`translation_api_${response.status}`);
-      }
-
-      const payloadJson = await response.json();
-      if (payloadJson?.error_code) {
-        const err = new Error(String(payloadJson.error_code));
-        err.code = payloadJson.error_code;
-        err.meta = payloadJson.missing_model || null;
+        const message = errorPayload?.message || errorPayload?.error?.message || `translation_api_${response.status}`;
+        const err = new Error(String(message));
+        err.status = response.status;
+        err.code = errorPayload?.code || `translation_api_${response.status}`;
         throw err;
       }
-      return payloadJson;
+
+      return response.json();
     } catch (error) {
       clearTimeout(timeout);
       if (error && error.name === 'AbortError') {
@@ -217,9 +257,30 @@ async function callLlmTranslate(input, config) {
   throw lastError;
 }
 
+function toDeepLPayload(items, sourceLang, targetLang) {
+  const payload = {
+    text: items.map((item) => String(item.text || '')),
+    target_lang: toDeepLTarget(targetLang)
+  };
+  const source = toDeepLSource(sourceLang);
+  if (source) {
+    payload.source_lang = source;
+  }
+  return payload;
+}
+
+function fromDeepLResponse(items, payload) {
+  const translations = Array.isArray(payload?.translations) ? payload.translations : [];
+  return items.map((item, index) => ({
+    id: item.id,
+    translated_text: String(translations[index]?.text || ''),
+    confidence: translations[index]?.text ? 0.9 : 0
+  }));
+}
+
 async function translateItems(items, sourceLang, targetLang, config) {
   const normalized = normalizeConfig(config);
-  const payload = {
+  const legacyPayload = {
     request_id: crypto.randomUUID(),
     source_lang: sourceLang,
     target_lang: targetLang,
@@ -227,12 +288,12 @@ async function translateItems(items, sourceLang, targetLang, config) {
   };
 
   if (normalized.engine === 'llm') {
-    const result = await callLlmTranslate(payload, normalized);
+    const result = await callLlmTranslate(legacyPayload, normalized);
     return result.items || [];
   }
 
-  const result = await callTranslateApi(payload, normalized);
-  return result.items || [];
+  const result = await callTranslateApi(toDeepLPayload(items, sourceLang, targetLang), normalized);
+  return fromDeepLResponse(items, result);
 }
 
 async function translateBlocks(ocrBlocks, sourceLang = 'auto', targetLang = 'zh-CN', config = {}) {
@@ -284,5 +345,9 @@ async function translateText(text, sourceLang = 'auto', targetLang = 'zh-CN', co
 
 module.exports = {
   translateBlocks,
-  translateText
+  translateText,
+  toDeepLTarget,
+  toDeepLSource,
+  toDeepLPayload,
+  fromDeepLResponse
 };

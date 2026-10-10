@@ -1,20 +1,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const payload = {
-  request_id: 'r1',
-  source_lang: 'auto',
-  target_lang: 'zh-CN',
-  items: [
-    { id: 'b1', text: 'Hello world' },
-    { id: 'b2', text: 'How are you?' }
-  ]
-};
+const { toDeepLPayload, toDeepLTarget, toDeepLSource } = require('../desktop/lib/translation-provider');
 
-test('translate payload should match required contract shape', () => {
-  assert.equal(typeof payload.request_id, 'string');
-  assert.equal(Array.isArray(payload.items), true);
-  assert.equal(typeof payload.items[0].id, 'string');
-  assert.equal(typeof payload.items[0].text, 'string');
-  assert.equal(payload.target_lang, 'zh-CN');
+test('desktop translate payload should follow DeepL v2', () => {
+  const payload = toDeepLPayload(
+    [
+      { id: 'b1', text: 'Hello world' },
+      { id: 'b2', text: 'How are you?' }
+    ],
+    'auto',
+    'zh-CN'
+  );
+  assert.deepEqual(payload.text, ['Hello world', 'How are you?']);
+  assert.equal(payload.target_lang, 'ZH');
+  assert.equal(payload.source_lang, undefined);
+  assert.equal(toDeepLTarget('en-us'), 'EN-US');
+  assert.equal(toDeepLTarget('EN-gb'), 'EN-GB');
+  assert.equal(toDeepLTarget('zh-Hant'), 'ZH-HANT');
+  assert.equal(toDeepLSource('en-US'), 'EN');
+  assert.equal(toDeepLSource('auto'), null);
 });

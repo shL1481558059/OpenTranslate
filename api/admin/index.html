@@ -75,6 +75,32 @@
         </aside>
 
         <section class="content">
+          <section class="card" id="translateCard">
+            <div class="section-title">
+              <h2>DeepL v2 翻译</h2>
+              <p>POST /v2/translate，JSON 或表单。source_lang 可省略以自动检测。</p>
+            </div>
+            <div class="grid">
+              <label class="field">
+                <span>source_lang</span>
+                <input id="translateSource" type="text" placeholder="留空自动检测，或 EN / ZH" />
+              </label>
+              <label class="field">
+                <span>target_lang</span>
+                <input id="translateTarget" type="text" value="ZH" />
+              </label>
+            </div>
+            <label class="field">
+              <span>text</span>
+              <textarea id="translateText" rows="4" placeholder="Hello world">Hello world</textarea>
+            </label>
+            <div class="field-inline">
+              <button id="translateBtn" type="button">翻译</button>
+              <button id="usageBtn" type="button" class="ghost">查看 /v2/usage</button>
+            </div>
+            <pre id="translateResult" class="meta"></pre>
+          </section>
+
           <section class="card" id="argosModelsCard">
             <div class="section-title">
               <h2>Argos 模型</h2>

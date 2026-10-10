@@ -10,7 +10,8 @@ const HOST = process.env.TRANSLATION_API_HOST || '127.0.0.1';
 const LOCAL_MODEL_NAME = process.env.LOCAL_TRANSLATE_MODEL_NAME || 'argos-local';
 
 const { getConfig, updateConfig, loadConfig, getAdminToken, writeJsonAtomic } = require('./config');
-const { normalizeLang, detectLanguageFromItems, extractMarianPair } = require('./lang-utils');
+const { normalizeLang, detectLanguageFromText, detectLanguageFromItems, extractMarianPair } = require('./lang-utils');
+const deepl = require('./deepl');
 const localArgos = require('./local/argos_client');
 const marianClient = require('./local/marian_client');
 const argosManager = require('./local/argos_manager');
@@ -19,6 +20,18 @@ const marianManager = require('./local/marian_manager');
 const ADMIN_UI_DIR = path.resolve(__dirname, 'admin');
 const ADMIN_ASSETS_DIR = path.join(ADMIN_UI_DIR, 'assets');
 const MODEL_CACHE_PATH = path.resolve(__dirname, 'model-cache.json');
+const USAGE_PATH = path.resolve(__dirname, 'usage.json');
+function characterLimit() {
+  const raw = process.env.DEEPL_CHARACTER_LIMIT;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return 1000000000000;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    return 1000000000000;
+  }
+  return Math.floor(value);
+}
 
 const SERVER_ERROR = {
   bad_request: 400,
@@ -82,13 +95,19 @@ function normalizeEngine(engine, fallback = 'argos') {
   return fallback;
 }
 
-function jsonResponse(res, status, payload) {
+function jsonResponse(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(body)
+    'Content-Length': Buffer.byteLength(body),
+    'X-Trace-ID': extraHeaders['X-Trace-ID'] || deepl.traceId(),
+    ...extraHeaders
   });
   res.end(body);
+}
+
+function deeplError(res, status, message, code) {
+  return jsonResponse(res, status, deepl.errorPayload(message, code || deepl.statusCodeFor(status)));
 }
 
 function sendFile(res, filePath, contentType) {
@@ -131,20 +150,67 @@ function ensureAdmin(req, res, url) {
   return false;
 }
 
-function readJsonBody(req) {
+function readRawBody(req, limit = deepl.MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => {
-      try {
-        const raw = Buffer.concat(chunks).toString('utf8') || '{}';
-        resolve(JSON.parse(raw));
-      } catch (error) {
-        reject(new Error('invalid_json'));
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(Object.assign(new Error('payload_too_large'), { code: 'payload_too_large' }));
+        req.destroy();
+        return;
       }
+      chunks.push(chunk);
     });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+function readJsonBody(req) {
+  return readRawBody(req).then((raw) => {
+    const text = raw.toString('utf8') || '{}';
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error('invalid_json');
+    }
+  });
+}
+
+function loadUsage() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(USAGE_PATH, 'utf8'));
+    const count = Number(parsed?.character_count);
+    if (Number.isFinite(count) && count >= 0) {
+      return Math.floor(count);
+    }
+  } catch {
+    // ignore
+  }
+  return 0;
+}
+
+let characterCount = loadUsage();
+
+function currentUsage() {
+  return {
+    character_count: characterCount,
+    character_limit: characterLimit()
+  };
+}
+
+function addUsage(count) {
+  const next = Math.max(0, Math.floor(Number(count) || 0));
+  if (!next) return currentUsage();
+  characterCount += next;
+  try {
+    writeJsonAtomic(USAGE_PATH, currentUsage());
+  } catch {
+    // usage persistence is best-effort
+  }
+  return currentUsage();
 }
 
 function validateTranslateRequest(body) {
@@ -252,7 +318,7 @@ function mergeById(items, translatedItems) {
     if (!translated || typeof translated.translated_text !== 'string') {
       return {
         id: item.id,
-        translated_text: `${item.text} [翻译失败，可重试]`,
+        translated_text: '',
         confidence: 0
       };
     }
@@ -378,6 +444,60 @@ async function callLocalTranslate(input) {
     latencyMs: Date.now() - startedAt,
     model: LOCAL_MODEL_NAME
   };
+}
+
+async function translateEngineItems(items, sourceLang, targetLang, config) {
+  const engine = normalizeEngine(config.engine, 'argos');
+  const engineInput = {
+    source_lang: sourceLang,
+    target_lang: targetLang,
+    items
+  };
+  if (engine === 'marian') {
+    return callMarianTranslate(engineInput, config);
+  }
+  return callLocalTranslate(engineInput);
+}
+
+async function translateDeepLTexts(normalized, config) {
+  const groups = new Map();
+  normalized.texts.forEach((text, index) => {
+    const detected = normalized.sourceLang || deepl.toDetectedSourceLanguage(detectLanguageFromText(text) || 'en');
+    const engineSource = deepl.toEngineLang(detected);
+    const key = `${detected}:${engineSource}`;
+    if (!groups.has(key)) {
+      groups.set(key, { detected, engineSource, entries: [] });
+    }
+    groups.get(key).entries.push({ index, text });
+  });
+
+  const targetEngine = deepl.toEngineLang(normalized.targetLang);
+  const outputs = new Array(normalized.texts.length);
+
+  for (const group of groups.values()) {
+    const items = group.entries.map((entry) => ({ id: String(entry.index), text: entry.text }));
+    const result = await translateEngineItems(items, group.engineSource, targetEngine, config);
+    const byId = new Map((result.translatedItems || []).map((item) => [item.id, item.translated_text]));
+    for (const entry of group.entries) {
+      const translated = byId.has(String(entry.index)) ? String(byId.get(String(entry.index)) ?? '') : '';
+      const row = {
+        detected_source_language: normalized.sourceLang || group.detected,
+        text: translated
+      };
+      if (normalized.showBilledCharacters) {
+        row.billed_characters = deepl.countCharacters(entry.text);
+      }
+      if (normalized.modelTypeUsed) {
+        row.model_type_used = normalized.modelTypeUsed;
+      }
+      if (normalized.tagHandlingVersion) {
+        row.tag_handling_version = normalized.tagHandlingVersion;
+      }
+      outputs[entry.index] = row;
+    }
+  }
+
+  return outputs;
 }
 
 async function callMarianTranslate(input, config) {
@@ -644,78 +764,70 @@ function createServer() {
       }
     }
 
-    if (req.method === 'POST' && pathname === '/v1/translate') {
-      let body;
-      try {
-        body = await readJsonBody(req);
-      } catch {
-        return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: 'invalid JSON' });
-      }
-
-      const validation = validateTranslateRequest(body);
-      if (validation) {
-        return jsonResponse(res, SERVER_ERROR.bad_request, { error_code: 'bad_request', message: validation });
-      }
-
-      const requestId = body.request_id || crypto.randomUUID();
-      const requestedSourceLang = body.source_lang || 'auto';
-      const targetLang = normalizeTargetLang(body.target_lang, 'zh');
-      const sourceResolution = resolveSourceLang(body.items, requestedSourceLang);
-      const config = getConfig();
-      const engine = normalizeEngine(config.engine, 'argos');
-
-      try {
-        const engineInput = {
-          source_lang: sourceResolution.sourceLang,
-          target_lang: targetLang,
-          items: body.items
-        };
-
-        let result;
-        if (engine === 'marian') {
-          result = await callMarianTranslate(engineInput, config);
-        } else {
-          result = await callLocalTranslate(engineInput);
+    if (pathname === '/v2/usage' || pathname === '/v2/languages' || pathname === '/v2/translate') {
+      if (req.method === 'POST' && pathname === '/v2/translate') {
+        let raw;
+        try {
+          raw = await readRawBody(req);
+        } catch (error) {
+          if (error?.code === 'payload_too_large') {
+            return deeplError(res, 413, 'The request size exceeds the limit.');
+          }
+          return deeplError(res, 400, 'Bad request. Please check error message and your parameters.');
         }
-
-        return jsonResponse(res, 200, {
-          request_id: requestId,
-          detected_source_lang: sourceResolution.detectedSourceLang,
-          items: mergeById(body.items, result.translatedItems),
-          model: result.model,
-          latency_ms: result.latencyMs,
-          error_code: null
-        });
-      } catch (error) {
-        const missingModel = extractMissingModel(error);
-        const status = missingModel ? SERVER_ERROR.missing_model : mapProviderErrorStatus(error);
-        const errorModel =
-          engine === 'marian'
-            ? `marian:${missingModel?.model_id || config?.marian?.modelId || 'unknown'}`
-            : LOCAL_MODEL_NAME;
-        return jsonResponse(res, status, {
-          request_id: requestId,
-          detected_source_lang: sourceResolution.detectedSourceLang,
-          items: body.items.map((item) => ({
-            id: item.id,
-            translated_text: `${item.text} [翻译失败，可重试]`,
-            confidence: 0
-          })),
-          model: errorModel,
-          latency_ms: null,
-          error_code:
-            status === SERVER_ERROR.missing_model
-              ? 'missing_model'
-              : status === SERVER_ERROR.timeout
-                ? 'timeout'
-                : status === SERVER_ERROR.auth_required
-                  ? 'auth_required'
-                  : status === SERVER_ERROR.rate_limited
-                    ? 'rate_limited'
-                    : 'provider_down',
-          missing_model: missingModel
-        });
+        let body;
+        try {
+          body = deepl.parseRequestBody(raw, req.headers['content-type']);
+        } catch {
+          return deeplError(res, 400, 'Bad request. Please check error message and your parameters.');
+        }
+        const auth = deepl.authorize(req, url, body);
+        if (!auth.ok) {
+          return deeplError(res, auth.status, auth.message);
+        }
+        const normalized = deepl.normalizeTranslateBody(body);
+        if (!normalized.ok) {
+          return deeplError(res, normalized.status, normalized.message);
+        }
+        const billed = normalized.texts.reduce((sum, text) => sum + deepl.countCharacters(text), 0);
+        if (characterCount + billed > characterLimit()) {
+          return deeplError(res, 456, 'Quota exceeded. The character limit has been reached.');
+        }
+        try {
+          const translations = await translateDeepLTexts(normalized, getConfig());
+          addUsage(billed);
+          return jsonResponse(res, 200, { translations });
+        } catch (error) {
+          const failure = deepl.providerFailure(error);
+          return deeplError(res, failure.status, failure.message, failure.code);
+        }
       }
+
+      if (req.method === 'GET' && pathname === '/v2/usage') {
+        const auth = deepl.authorize(req, url, null);
+        if (!auth.ok) {
+          return deeplError(res, auth.status, auth.message);
+        }
+        return jsonResponse(res, 200, currentUsage());
+      }
+
+      if (req.method === 'GET' && pathname === '/v2/languages') {
+        const auth = deepl.authorize(req, url, null);
+        if (!auth.ok) {
+          return deeplError(res, auth.status, auth.message);
+        }
+        const type = url.searchParams.get('type') || 'source';
+        if (type !== 'source' && type !== 'target') {
+          return deeplError(res, 400, "Value for 'type' not supported.");
+        }
+        return jsonResponse(res, 200, deepl.listLanguages(type));
+      }
+
+      return deeplError(res, 405, 'Bad request. Please check error message and your parameters.');
+    }
+
+    if (pathname.startsWith('/v2/')) {
+      return deeplError(res, 404, 'The requested resource could not be found.');
     }
 
     return jsonResponse(res, 404, { error_code: 'not_found' });
@@ -723,7 +835,9 @@ function createServer() {
 }
 
 function startTranslationApi(options = {}) {
-  const port = Number(options.port || PORT);
+  const port = options.port === undefined || options.port === null || options.port === ''
+    ? Number(PORT)
+    : Number(options.port);
   const host = options.host || HOST;
   const server = createServer();
   return new Promise((resolve) => {
@@ -737,8 +851,10 @@ function startTranslationApi(options = {}) {
       resolve({ ok: false, error });
     });
     server.listen(port, host, () => {
-      console.log(`[translation-api] listening on http://${host}:${port}`);
-      resolve({ ok: true, server, host, port });
+      const address = server.address();
+      const boundPort = address && typeof address === 'object' ? address.port : port;
+      console.log(`[translation-api] listening on http://${host}:${boundPort}`);
+      resolve({ ok: true, server, host, port: boundPort });
     });
   });
 }
@@ -750,7 +866,14 @@ module.exports = {
     shouldPassthroughText,
     resolveMarianModelSelection,
     buildMarianCandidates,
-    mergeById
+    mergeById,
+    translateDeepLTexts,
+    currentUsage,
+    addUsage,
+    resetUsage(count = 0) {
+      characterCount = Math.max(0, Math.floor(Number(count) || 0));
+      return currentUsage();
+    }
   }
 };
 

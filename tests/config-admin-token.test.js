@@ -73,6 +73,40 @@ test('config: startup ADMIN_TOKEN should keep highest priority', () => {
   }
 });
 
+test('config: startup env should override config.json engine and venv paths', () => {
+  const config = loadConfigModuleWithAdminToken(undefined);
+  const resolved = config.__private.applyEnvOverrides(
+    {
+      engine: 'marian',
+      local: {
+        argosModelDir: './models/argos',
+        marianModelDir: './models/marian',
+        pythonPath: './.venv-argos/bin/python',
+        venvDir: './.venv-argos',
+        timeoutMs: 20000
+      },
+      marian: {
+        modelId: 'file-model',
+        device: 'cpu',
+        dtype: 'float32',
+        maxTokens: 512,
+        hfEndpoint: '',
+        hfDisableSslVerify: false
+      },
+      admin: { token: '' }
+    },
+    {
+      TRANSLATION_ENGINE: 'argos',
+      LOCAL_TRANSLATE_PYTHON: './.venv/bin/python',
+      LOCAL_TRANSLATE_VENV: './.venv'
+    }
+  );
+  assert.equal(resolved.engine, 'argos');
+  assert.equal(resolved.local.pythonPath, './.venv/bin/python');
+  assert.equal(resolved.local.venvDir, './.venv');
+  assert.equal(resolved.marian.modelId, 'file-model');
+});
+
 test('config: applyRuntimeEnv should clear ADMIN_TOKEN when token is empty', () => {
   const previous = process.env.ADMIN_TOKEN;
   try {

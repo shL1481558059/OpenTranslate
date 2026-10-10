@@ -162,7 +162,11 @@ function compareBlocksByPosition(left, right) {
 }
 
 function getTranslatedText(textById, block) {
-  return textById.get(block.id) || `${block.text} [翻译失败，可重试]`;
+  if (!textById.has(block.id)) {
+    return '';
+  }
+  const value = textById.get(block.id);
+  return value == null ? '' : String(value);
 }
 
 function buildCompactMaskReplaceBlock(ocrBlocks, textById, selectionRect) {

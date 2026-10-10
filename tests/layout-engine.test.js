@@ -21,10 +21,11 @@ test('mapBlocks should preserve block ids and use translated text', () => {
   assert.equal(mapped[1].text, '世界');
 });
 
-test('mapBlocks should fallback when translation missing', () => {
+test('mapBlocks should not invent a failure suffix when translation is missing', () => {
   const ocrBlocks = [{ id: 'b1', text: 'Hello', bbox: { x: 0, y: 0, width: 60, height: 20 } }];
   const mapped = mapBlocks(ocrBlocks, []);
-  assert.equal(mapped[0].text.includes('翻译失败'), true);
+  assert.equal(mapped[0].text, '');
+  assert.equal(mapped[0].text.includes('翻译失败'), false);
 });
 
 test('mapBlocks should reanchor compact low-confidence layouts to the top', () => {

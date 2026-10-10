@@ -11,8 +11,8 @@ test('translation provider should not retry deterministic API errors', async () 
     calls += 1;
     return {
       ok: false,
-      status: 409,
-      json: async () => ({ error_code: 'missing_model' }),
+      status: 400,
+      json: async () => ({ message: "Value for 'target_lang' not supported.", code: 'bad_request' }),
       text: async () => ''
     };
   };
@@ -22,9 +22,9 @@ test('translation provider should not retry deterministic API errors', async () 
       () =>
         translationProvider.translateText('Hello world', 'en', 'zh-CN', {
           engine: 'api',
-          translationApiUrl: 'http://127.0.0.1:8787/v1/translate'
+          translationApiUrl: 'http://127.0.0.1:8787/v2/translate'
         }),
-      /missing_model/
+      /target_lang/
     );
     assert.equal(calls, 1);
   } finally {
@@ -41,15 +41,15 @@ test('translation provider should retry transient API failures once', async () =
     if (calls === 1) {
       return {
         ok: false,
-        status: 503,
-        json: async () => ({}),
+        status: 504,
+        json: async () => ({ message: 'Resource currently unavailable. Try again later.' }),
         text: async () => ''
       };
     }
     return {
       ok: true,
       json: async () => ({
-        items: [{ id: 't1', translated_text: '你好，世界', confidence: 0.98 }]
+        translations: [{ detected_source_language: 'EN', text: '你好，世界' }]
       })
     };
   };
@@ -57,7 +57,7 @@ test('translation provider should retry transient API failures once', async () =
   try {
     const result = await translationProvider.translateText('Hello world', 'en', 'zh-CN', {
       engine: 'api',
-      translationApiUrl: 'http://127.0.0.1:8787/v1/translate'
+      translationApiUrl: 'http://127.0.0.1:8787/v2/translate'
     });
     assert.equal(result.text, '你好，世界');
     assert.equal(calls, 2);

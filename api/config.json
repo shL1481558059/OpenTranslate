@@ -1,10 +1,10 @@
 {
-  "engine": "marian",
+  "engine": "argos",
   "local": {
     "argosModelDir": "./models/argos",
     "marianModelDir": "./models/marian",
-    "pythonPath": "./.venv-argos/bin/python",
-    "venvDir": "./.venv-argos",
+    "pythonPath": "./.venv/bin/python",
+    "venvDir": "./.venv",
     "timeoutMs": 20000
   },
   "marian": {
