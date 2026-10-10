@@ -40,7 +40,6 @@
     ],
     "resources": {
       "../../api/": "api/",
-      "../lib/": "desktop/lib/",
       "swift/": "swift/"
     }
   }

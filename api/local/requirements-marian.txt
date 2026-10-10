@@ -1,0 +1,5 @@
+transformers
+sentencepiece
+torch
+huggingface_hub
+urllib3<2

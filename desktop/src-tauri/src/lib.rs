@@ -3,6 +3,7 @@ mod cursor;
 mod deepl;
 mod embedded_api;
 mod hotkey;
+mod layout;
 mod ocr_models;
 mod paths;
 mod pipeline;

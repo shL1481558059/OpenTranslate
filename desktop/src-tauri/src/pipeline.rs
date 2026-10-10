@@ -1,5 +1,4 @@
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
@@ -98,13 +97,19 @@ pub async fn run(app: AppHandle, rect: Rect) {
         .await
     } else {
         crate::embedded_api::wait_until_ready().await;
-        translate::translate_texts(
+        let progress_app = app.clone();
+        crate::embedded_api::set_progress_hook(Some(Arc::new(move |message| {
+            emit_status(&progress_app, rect, host, message, 0.35, "#ffffff");
+        })));
+        let result = translate::translate_texts(
             &settings.translation_api_url,
             &texts,
             &settings.source_lang,
             &settings.target_lang,
         )
-        .await
+        .await;
+        crate::embedded_api::set_progress_hook(None);
+        result
     };
     let translated = match translated {
         Ok(items) => items,
@@ -128,13 +133,7 @@ pub async fn run(app: AppHandle, rect: Rect) {
             })
         })
         .collect::<Vec<_>>();
-    let mut laid_out = match layout_with_node(&app, &scaled, &items, rect, host) {
-        Ok(value) => value,
-        Err(error) => {
-            eprintln!("[layout] {error}");
-            fallback_layout(&scaled, &items, rect, host)
-        }
-    };
+    let mut laid_out = crate::layout::render(&scaled, &items, json!(rect), json!(host));
     let compact = laid_out
         .get("blocks")
         .and_then(|value| value.as_array())
@@ -180,75 +179,6 @@ fn scale_block(block: &OcrBlock, scale_x: f64, scale_y: f64) -> Value {
             "width": (block.bbox.width as f64 / scale_x).round().max(1.0) as i32,
             "height": (block.bbox.height as f64 / scale_y).round().max(1.0) as i32
         }
-    })
-}
-
-fn layout_with_node(app: &AppHandle, blocks: &[Value], items: &[Value], rect: Rect, host: Rect) -> Result<Value, String> {
-    let script = paths::layout_script(app);
-    let node = paths::node_binary();
-    let mut child = Command::new(&node)
-        .arg(&script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("layout node: {error}"))?;
-    let body = json!({
-        "blocks": blocks,
-        "items": items,
-        "selectionRect": rect,
-        "displayBounds": host
-    });
-    {
-        let stdin = child.stdin.as_mut().ok_or_else(|| "layout stdin missing".to_string())?;
-        stdin
-            .write_all(serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()).as_bytes())
-            .map_err(|error| error.to_string())?;
-    }
-    let output = child.wait_with_output().map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "layout exited {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    serde_json::from_slice(&output.stdout).map_err(|error| format!("layout json: {error}"))
-}
-
-fn fallback_layout(blocks: &[Value], items: &[Value], rect: Rect, host: Rect) -> Value {
-    let rendered = blocks
-        .iter()
-        .enumerate()
-        .map(|(index, block)| {
-            let mut next = block.clone();
-            let text = items
-                .get(index)
-                .and_then(|item| item.get("translatedText"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            next["text"] = json!(text);
-            next["styleHint"] = json!({
-                "fontSize": 16,
-                "lineHeight": 1.2,
-                "padding": 2,
-                "background": "transparent",
-                "color": "#ffffff",
-                "textShadow": "0 1px 2px rgba(0,0,0,0.6)"
-            });
-            next
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "blocks": rendered,
-        "extraction": {
-            "sourceText": blocks.iter().filter_map(|block| block.get("text").and_then(|value| value.as_str())).collect::<Vec<_>>().join("\n"),
-            "translatedText": items.iter().filter_map(|item| item.get("translatedText").and_then(|value| value.as_str())).collect::<Vec<_>>().join("\n")
-        },
-        "overlayBounds": host,
-        "selectionRect": relative(rect, host),
-        "controlRect": relative(Rect { x: rect.x + rect.width - 260, y: rect.y - 36, width: 260, height: 36 }, host),
-        "controlSide": "top"
     })
 }
 

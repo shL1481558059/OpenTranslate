@@ -38,9 +38,9 @@ cp .env.example .env
 npm run start:desktop
 ```
 
-`npm run start:desktop` serves the UI and starts the Tauri shell. The shell listens on `127.0.0.1:8787` from inside the app process. Environment variables in `.env` override `api/config.json`. Overlay layout still calls system `node` when it is installed, and falls back to the built-in layout otherwise.
+`npm run start:desktop` serves the UI and starts the Tauri shell. The shell listens on `127.0.0.1:8787` from inside the app process. Environment variables in `.env` override `api/config.json`. Overlay layout runs inside the app and does not call Node.
 
-For Argos, set `TRANSLATION_ENGINE=argos`, put `.argosmodel` files in `models/argos/`, and let the first request create `./.venv`. Marian is selected with `TRANSLATION_ENGINE=marian`.
+For Argos, set `TRANSLATION_ENGINE=argos` and put `.argosmodel` files in `models/argos/`. The first translation creates `./.venv` and installs only `argostranslate`. Marian (`TRANSLATION_ENGINE=marian`) installs torch and transformers into that environment when it is first selected. The interpreter is `.venv/bin/python` on macOS and Linux, and `.venv\Scripts\python.exe` on Windows.
 
 ```bash
 npm test
@@ -67,7 +67,7 @@ The admin UI at `http://127.0.0.1:8787/admin` can try `/v2/translate` and still 
 
 ## How the API is packaged
 
-The desktop process embeds the DeepL-compatible HTTP service. Release builds strip debug symbols. Installers include `api/` (Python workers and the admin page), `desktop/lib/`, and the Apple Vision Swift source. They do not include a Node runtime or the PP-OCRv4 models. macOS and Windows use the system OCR engines. Linux downloads `det.onnx`, `rec.onnx`, and `keys.txt` on first OCR and reports a clear error if that download fails.
+The desktop process embeds the DeepL-compatible HTTP service and the overlay layout. Release builds strip debug symbols. Installers include `api/` (Python workers and the admin page) and the Apple Vision Swift source. They do not include a Node runtime or the PP-OCRv4 models. macOS and Windows use the system OCR engines. Linux downloads `det.onnx`, `rec.onnx`, and `keys.txt` on first OCR and reports a clear error if that download fails.
 
 `npm run start:api` and Docker still run the Node server in `api/server.js`. The Node server is what `npm test` exercises. The packaged app does not start it.
 

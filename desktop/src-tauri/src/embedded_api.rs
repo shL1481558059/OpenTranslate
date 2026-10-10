@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
@@ -19,6 +20,21 @@ use tokio::sync::Mutex;
 use crate::deepl;
 
 static READY: AtomicBool = AtomicBool::new(false);
+static PROGRESS: StdMutex<Option<Arc<dyn Fn(&str) + Send + Sync>>> = StdMutex::new(None);
+
+pub fn set_progress_hook(hook: Option<Arc<dyn Fn(&str) + Send + Sync>>) {
+    if let Ok(mut guard) = PROGRESS.lock() {
+        *guard = hook;
+    }
+}
+
+fn report_progress(message: &str) {
+    eprintln!("[python] {message}");
+    let hook = PROGRESS.lock().ok().and_then(|guard| guard.clone());
+    if let Some(hook) = hook {
+        hook(message);
+    }
+}
 
 #[derive(Clone)]
 pub struct ApiPaths {
@@ -566,7 +582,7 @@ async fn marian_request(state: &ApiState, config: &Value, payload: Value) -> Res
 }
 
 async fn spawn_marian(paths: &ApiPaths, config: &Value) -> Result<Worker, String> {
-    let python = resolve_python(paths, config).await?;
+    let python = resolve_python(paths, config, "marian").await?;
     let worker_path = paths.api_dir.join("local").join("marian_worker.py");
     let model_dir = marian_root(paths, config);
     std::fs::create_dir_all(&model_dir).ok();
@@ -586,7 +602,7 @@ async fn spawn_marian(paths: &ApiPaths, config: &Value) -> Result<Worker, String
 }
 
 async fn spawn_argos(paths: &ApiPaths, config: &Value) -> Result<Worker, String> {
-    let python = resolve_python(paths, config).await?;
+    let python = resolve_python(paths, config, "argos").await?;
     let worker_path = paths.api_dir.join("local").join("argos_worker.py");
     let model_dir = model_dir(paths, config);
     std::fs::create_dir_all(&model_dir).ok();
@@ -608,48 +624,159 @@ async fn spawn_argos(paths: &ApiPaths, config: &Value) -> Result<Worker, String>
     Ok(Worker { child, stdin, lines: BufReader::new(stdout).lines() })
 }
 
-async fn resolve_python(paths: &ApiPaths, config: &Value) -> Result<PathBuf, String> {
-    let configured = config
-        .pointer("/local/pythonPath")
-        .and_then(|value| value.as_str())
-        .unwrap_or("./.venv/bin/python");
-    let path = resolve_under(&paths.work_dir, configured);
-    if path.exists() {
-        return Ok(path);
-    }
+async fn resolve_python(paths: &ApiPaths, config: &Value, engine: &str) -> Result<PathBuf, String> {
     let venv = resolve_under(
         &paths.work_dir,
         config.pointer("/local/venvDir").and_then(|value| value.as_str()).unwrap_or("./.venv"),
     );
-    let launcher = if cfg!(windows) { "python" } else { "python3" };
-    let created = Command::new(launcher)
-        .arg("-m")
-        .arg("venv")
-        .arg(&venv)
-        .status()
-        .await
-        .map_err(|error| format!("无法创建 Python 虚拟环境：{error}"))?;
-    if !created.success() {
-        return Err("无法创建 Python 虚拟环境。请先安装 python3。".into());
+    let configured = config.pointer("/local/pythonPath").and_then(|value| value.as_str()).unwrap_or("");
+    let derived = PathBuf::from(default_python_relative(&venv.to_string_lossy()));
+    let python = if configured.trim().is_empty() || (cfg!(windows) && is_legacy_unix_python(configured)) {
+        derived.clone()
+    } else {
+        resolve_under(&paths.work_dir, configured)
+    };
+    if !python.exists() {
+        if python != derived && !configured.trim().is_empty() {
+            return Err(format!("Python 解释器不存在：{}。", python.display()));
+        }
+        report_progress("正在创建 Python 虚拟环境…");
+        let launcher = find_python_launcher().await?;
+        let mut args = launcher.prefix.clone();
+        args.extend(["-m".into(), "venv".into(), venv.display().to_string()]);
+        let created = Command::new(&launcher.program)
+            .args(&args)
+            .output()
+            .await
+            .map_err(|error| format!("无法创建 Python 虚拟环境：{error}"))?;
+        if !created.status.success() || !python.exists() {
+            return Err(format!(
+                "无法创建 Python 虚拟环境。请安装 Python 后重试（Windows 使用 py 或 python，其他系统使用 python3）。{}",
+                command_tail(&created)
+            ));
+        }
     }
-    let requirements = paths.api_dir.join("local").join("requirements.txt");
-    let installed = Command::new(&path)
-        .arg("-m")
-        .arg("pip")
-        .arg("install")
-        .arg("-r")
+    if python_imports(&python, engine).await? {
+        return Ok(python);
+    }
+    let (file_name, label) = if engine == "marian" {
+        ("requirements-marian.txt", "正在安装 Marian 依赖（torch、transformers）…")
+    } else {
+        ("requirements-argos.txt", "正在安装 Argos 依赖（argostranslate）…")
+    };
+    report_progress(label);
+    let requirements = paths.api_dir.join("local").join(file_name);
+    let installed = Command::new(&python)
+        .args(["-m", "pip", "install", "-r"])
         .arg(&requirements)
-        .status()
+        .output()
         .await
-        .map_err(|error| format!("安装翻译依赖失败：{error}"))?;
-    if !installed.success() || !path.exists() {
-        return Err(format!("安装翻译依赖失败。请检查 {} 和网络连接。", requirements.display()));
+        .map_err(|error| format!("安装依赖失败：{error}"))?;
+    if !installed.status.success() {
+        let name = if engine == "marian" { "Marian" } else { "Argos" };
+        return Err(format!("安装 {name} 依赖失败。请检查网络后重试。{}", command_tail(&installed)));
     }
-    Ok(path)
+    report_progress(if engine == "marian" { "Marian 依赖已安装。" } else { "Argos 依赖已安装。" });
+    Ok(python)
+}
+
+struct PythonLauncher {
+    program: String,
+    prefix: Vec<String>,
+}
+
+async fn find_python_launcher() -> Result<PythonLauncher, String> {
+    let candidates: &[(&str, &[&str])] = if cfg!(windows) {
+        &[("py", &["-3"]), ("python", &[]), ("python3", &[])]
+    } else {
+        &[("python3", &[]), ("python", &[])]
+    };
+    for (program, prefix) in candidates {
+        let mut command = Command::new(program);
+        command.args(*prefix).arg("--version");
+        if let Ok(output) = command.output().await {
+            if output.status.success() {
+                return Ok(PythonLauncher {
+                    program: (*program).to_string(),
+                    prefix: prefix.iter().map(|item| (*item).to_string()).collect(),
+                });
+            }
+        }
+    }
+    Err("找不到 Python。Windows 请安装 Python 并确认 py 或 python 可用；其他系统请安装 python3。".into())
+}
+
+async fn python_imports(python: &Path, engine: &str) -> Result<bool, String> {
+    let check = if engine == "marian" {
+        "import transformers, sentencepiece, torch, huggingface_hub"
+    } else {
+        "import argostranslate"
+    };
+    let output = Command::new(python)
+        .args(["-c", check])
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(output.status.success())
+}
+
+fn command_tail(output: &std::process::Output) -> String {
+    let mut text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if text.is_empty() {
+        text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    }
+    if text.is_empty() {
+        return String::new();
+    }
+    let tail: String = text.chars().rev().take(400).collect::<String>().chars().rev().collect();
+    format!(" {tail}")
+}
+
+fn is_legacy_unix_python(raw: &str) -> bool {
+    let normalized = raw.trim().replace('\\', "/");
+    normalized == "./.venv/bin/python" || normalized == ".venv/bin/python" || normalized.ends_with("/.venv/bin/python")
+}
+
+fn default_python_relative(venv: &str) -> String {
+    default_python_relative_for(venv, cfg!(windows))
+}
+
+fn default_python_relative_for(venv: &str, windows: bool) -> String {
+    let root = venv.trim().trim_end_matches(['/', '\\']);
+    if windows {
+        format!("{root}/Scripts/python.exe")
+    } else {
+        format!("{root}/bin/python")
+    }
+}
+
+#[cfg(test)]
+mod python_path_tests {
+    use super::*;
+
+    #[test]
+    fn derives_the_interpreter_from_the_platform() {
+        assert_eq!(default_python_relative_for("./.venv", true), "./.venv/Scripts/python.exe");
+        assert_eq!(default_python_relative_for("./.venv", false), "./.venv/bin/python");
+        assert!(is_legacy_unix_python("./.venv/bin/python"));
+        assert!(is_legacy_unix_python(r".venv\bin\python"));
+        assert!(!is_legacy_unix_python("./.venv/Scripts/python.exe"));
+    }
+}
+
+fn normalize_python_config(config: &mut Value) {
+    let venv = config.pointer("/local/venvDir").and_then(|value| value.as_str()).unwrap_or("./.venv").to_string();
+    let raw = config.pointer("/local/pythonPath").and_then(|value| value.as_str()).unwrap_or("").trim().to_string();
+    if raw.is_empty() || (cfg!(windows) && is_legacy_unix_python(&raw)) {
+        if !config.get("local").map(|value| value.is_object()).unwrap_or(false) {
+            config["local"] = json!({});
+        }
+        config["local"]["pythonPath"] = json!(default_python_relative(&venv));
+    }
 }
 
 async fn python_json(paths: &ApiPaths, config: &Value, args: &[&str]) -> Result<Value, String> {
-    let python = resolve_python(paths, config).await?;
+    let python = resolve_python(paths, config, "argos").await?;
     let script = paths.api_dir.join("local").join("download_model.py");
     let output = Command::new(python)
         .arg(script)
@@ -664,7 +791,7 @@ async fn python_json(paths: &ApiPaths, config: &Value, args: &[&str]) -> Result<
 }
 
 async fn python_status(paths: &ApiPaths, config: &Value, args: &[&str]) -> Result<(), String> {
-    let python = resolve_python(paths, config).await?;
+    let python = resolve_python(paths, config, "argos").await?;
     let script = paths.api_dir.join("local").join("download_model.py");
     let output = Command::new(python)
         .arg(script)
@@ -777,6 +904,7 @@ fn load_config(paths: &ApiPaths, startup_env: &HashMap<String, String>, admin_to
     let mut config = defaults(startup_env);
     merge(&mut config, &stored);
     apply_startup_env(&mut config, startup_env, admin_token);
+    normalize_python_config(&mut config);
     config
 }
 
@@ -784,6 +912,7 @@ fn update_config(state: &ApiState, current: &Value, patch: &Value) -> Value {
     let mut next = current.clone();
     merge(&mut next, patch);
     apply_startup_env(&mut next, &state.startup_env, &state.external_admin_token);
+    normalize_python_config(&mut next);
     if let Some(parent) = state.paths.config_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -797,7 +926,7 @@ fn defaults(env: &HashMap<String, String>) -> Value {
         "local": {
             "argosModelDir": env.get("LOCAL_TRANSLATE_MODEL_DIR").cloned().unwrap_or_else(|| "./models/argos".into()),
             "marianModelDir": env.get("LOCAL_MARIAN_MODEL_DIR").cloned().unwrap_or_else(|| "./models/marian".into()),
-            "pythonPath": env.get("LOCAL_TRANSLATE_PYTHON").cloned().unwrap_or_else(|| "./.venv/bin/python".into()),
+            "pythonPath": env.get("LOCAL_TRANSLATE_PYTHON").cloned().unwrap_or_else(|| default_python_relative(env.get("LOCAL_TRANSLATE_VENV").map(String::as_str).unwrap_or("./.venv"))),
             "venvDir": env.get("LOCAL_TRANSLATE_VENV").cloned().unwrap_or_else(|| "./.venv".into()),
             "timeoutMs": env.get("LOCAL_TRANSLATE_TIMEOUT_MS").and_then(|value| value.parse::<u64>().ok()).unwrap_or(20000)
         },

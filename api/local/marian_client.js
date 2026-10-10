@@ -6,7 +6,8 @@ const readline = require('node:readline');
 
 const execFileAsync = promisify(execFile);
 
-const REQUIREMENTS_PATH = path.resolve(__dirname, 'requirements.txt');
+const { defaultVenvPython, ensureVenv: createVirtualEnv, pipInstall } = require('./python_env');
+const REQUIREMENTS_PATH = path.resolve(__dirname, 'requirements-marian.txt');
 let currentConfig = null;
 
 let initPromise = null;
@@ -18,7 +19,7 @@ let chain = Promise.resolve();
 function getRuntimeConfig() {
   const modelDir = path.resolve(process.env.LOCAL_MARIAN_MODEL_DIR || path.join(process.cwd(), 'models', 'marian'));
   const venvDir = path.resolve(process.env.LOCAL_TRANSLATE_VENV || path.join(process.cwd(), '.venv'));
-  const pythonPath = path.resolve(process.env.LOCAL_TRANSLATE_PYTHON || path.join(venvDir, 'bin', 'python'));
+  const pythonPath = path.resolve(process.env.LOCAL_TRANSLATE_PYTHON || defaultVenvPython(venvDir));
   const timeoutMs = Number(process.env.LOCAL_TRANSLATE_TIMEOUT_MS || 20000);
   const hfEndpoint = process.env.MARIAN_HF_ENDPOINT || process.env.HF_ENDPOINT || '';
   const hfDisableSslVerify = Boolean(
@@ -77,7 +78,7 @@ async function ensureMarianDeps(config) {
       // fall through to reinstall
     }
   }
-  await execFileAsync(config.pythonPath, ['-m', 'pip', 'install', '-r', REQUIREMENTS_PATH]);
+  await pipInstall(config.pythonPath, REQUIREMENTS_PATH, 'Marian 依赖（torch、transformers）');
   try {
     writeFileSync(depsStamp, new Date().toISOString(), 'utf8');
   } catch {
@@ -93,7 +94,7 @@ async function ensureVenv() {
       mkdirSync(config.modelDir, { recursive: true });
     }
     if (!existsSync(config.pythonPath)) {
-      await execFileAsync('python3', ['-m', 'venv', config.venvDir]);
+      await createVirtualEnv(config.venvDir);
     }
     await ensureMarianDeps(config);
   })();

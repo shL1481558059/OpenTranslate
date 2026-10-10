@@ -3,7 +3,6 @@
   "local": {
     "argosModelDir": "./models/argos",
     "marianModelDir": "./models/marian",
-    "pythonPath": "./.venv/bin/python",
     "venvDir": "./.venv",
     "timeoutMs": 20000
   },

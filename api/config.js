@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { resolvePythonPath } = require('./local/python_env');
 
 const CONFIG_PATH = path.resolve(__dirname, 'config.json');
 const EXTERNAL_ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || '').trim();
@@ -51,13 +52,14 @@ function parseBoolean(value, fallback = false) {
 }
 
 function buildDefaults() {
+  const venvDir = process.env.LOCAL_TRANSLATE_VENV || path.join(process.cwd(), '.venv');
   return {
     engine: normalizeEngine(process.env.TRANSLATION_ENGINE, 'argos'),
     local: {
       argosModelDir: process.env.LOCAL_TRANSLATE_MODEL_DIR || path.join(process.cwd(), 'models', 'argos'),
       marianModelDir: process.env.LOCAL_MARIAN_MODEL_DIR || path.join(process.cwd(), 'models', 'marian'),
-      pythonPath: process.env.LOCAL_TRANSLATE_PYTHON || path.join(process.cwd(), '.venv', 'bin', 'python'),
-      venvDir: process.env.LOCAL_TRANSLATE_VENV || path.join(process.cwd(), '.venv'),
+      pythonPath: resolvePythonPath(venvDir, process.env.LOCAL_TRANSLATE_PYTHON),
+      venvDir,
       timeoutMs: Number(process.env.LOCAL_TRANSLATE_TIMEOUT_MS || 20000)
     },
     marian: {
@@ -112,7 +114,9 @@ function sanitizeConfig(input, fallback) {
       next.local.marianModelDir = input.local.marianModelDir.trim() || base.local.marianModelDir;
     }
     if (typeof input.local.pythonPath === 'string') {
-      next.local.pythonPath = input.local.pythonPath.trim() || base.local.pythonPath;
+      next.local.pythonPath = resolvePythonPath(next.local.venvDir, input.local.pythonPath.trim() || base.local.pythonPath);
+    } else {
+      next.local.pythonPath = resolvePythonPath(next.local.venvDir, base.local.pythonPath);
     }
     if (typeof input.local.venvDir === 'string') {
       next.local.venvDir = input.local.venvDir.trim() || base.local.venvDir;

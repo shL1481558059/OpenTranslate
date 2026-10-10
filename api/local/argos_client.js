@@ -6,7 +6,8 @@ const readline = require('node:readline');
 
 const execFileAsync = promisify(execFile);
 
-const REQUIREMENTS_PATH = path.resolve(__dirname, 'requirements.txt');
+const { defaultVenvPython, ensureVenv: createVirtualEnv, pipInstall } = require('./python_env');
+const REQUIREMENTS_PATH = path.resolve(__dirname, 'requirements-argos.txt');
 let currentConfig = null;
 
 let initPromise = null;
@@ -22,7 +23,7 @@ function getRuntimeConfig() {
   const xdgCache = path.join(xdgRoot, 'cache');
   const xdgConfig = path.join(xdgRoot, 'config');
   const venvDir = path.resolve(process.env.LOCAL_TRANSLATE_VENV || path.join(process.cwd(), '.venv'));
-  const pythonPath = path.resolve(process.env.LOCAL_TRANSLATE_PYTHON || path.join(venvDir, 'bin', 'python'));
+  const pythonPath = path.resolve(process.env.LOCAL_TRANSLATE_PYTHON || defaultVenvPython(venvDir));
   const timeoutMs = Number(process.env.LOCAL_TRANSLATE_TIMEOUT_MS || 20000);
   const isPackaged = process.env.SNAP_TRANSLATE_IS_PACKAGED === '1';
   const resourcesPath = process.env.SNAP_TRANSLATE_RESOURCES_PATH || process.resourcesPath || '';
@@ -69,8 +70,14 @@ async function ensureVenv() {
     mkdirSync(config.xdgCache, { recursive: true });
     mkdirSync(config.xdgConfig, { recursive: true });
     if (!existsSync(config.pythonPath)) {
-      await execFileAsync('python3', ['-m', 'venv', config.venvDir]);
-      await execFileAsync(config.pythonPath, ['-m', 'pip', 'install', '-r', REQUIREMENTS_PATH]);
+      await createVirtualEnv(config.venvDir);
+      await pipInstall(config.pythonPath, REQUIREMENTS_PATH, 'Argos 依赖（argostranslate）');
+    } else {
+      try {
+        await execFileAsync(config.pythonPath, ['-c', 'import argostranslate']);
+      } catch {
+        await pipInstall(config.pythonPath, REQUIREMENTS_PATH, 'Argos 依赖（argostranslate）');
+      }
     }
   })();
   return initPromise;

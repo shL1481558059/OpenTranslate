@@ -38,9 +38,9 @@ cp .env.example .env
 npm run start:desktop
 ```
 
-桌面端会拉起界面，并在本进程监听 `127.0.0.1:8787`。`.env` 里的变量优先于 `api/config.json`。浮层排版在系统装有 `node` 时仍会调用它，否则使用内置排版。
+桌面端会拉起界面，并在本进程监听 `127.0.0.1:8787`。`.env` 里的变量优先于 `api/config.json`。浮层排版在进程内完成，不再调用 Node。
 
-Argos：`TRANSLATION_ENGINE=argos`，把 `.argosmodel` 放到 `models/argos/`，第一次翻译会创建 `./.venv`。Marian：`TRANSLATION_ENGINE=marian`。
+Argos：`TRANSLATION_ENGINE=argos`，把 `.argosmodel` 放到 `models/argos/`。第一次翻译会创建 `./.venv`，并且只安装 `argostranslate`。Marian（`TRANSLATION_ENGINE=marian`）第一次使用时才安装 torch 和 transformers。macOS 和 Linux 的解释器是 `.venv/bin/python`，Windows 是 `.venv\Scripts\python.exe`。
 
 ```bash
 npm test
@@ -67,7 +67,7 @@ npm run start:api
 
 ## 安装包里的翻译服务
 
-桌面进程内嵌 DeepL 兼容 HTTP 服务。发布构建会去掉调试符号。安装包包含 `api/`（Python worker 和管理页）、`desktop/lib/` 和 Apple Vision 的 Swift 源文件，不再包含 Node 运行时，也不再包含 PP-OCRv4 模型。macOS 和 Windows 使用系统 OCR。Linux 在第一次 OCR 时下载 `det.onnx`、`rec.onnx` 和 `keys.txt`，下载失败会给出明确错误。
+桌面进程内嵌 DeepL 兼容 HTTP 服务和浮层排版。发布构建会去掉调试符号。安装包包含 `api/`（Python worker 和管理页）和 Apple Vision 的 Swift 源文件，不再包含 Node 运行时，也不再包含 PP-OCRv4 模型。macOS 和 Windows 使用系统 OCR。Linux 在第一次 OCR 时下载 `det.onnx`、`rec.onnx` 和 `keys.txt`，下载失败会给出明确错误。
 
 `npm run start:api` 和 Docker 仍然运行 `api/server.js`。`npm test` 测的是这个 Node 服务。安装包不会启动它。
 

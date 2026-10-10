@@ -1,6 +1,4 @@
-argostranslate
-transformers
-sentencepiece
-torch
-huggingface_hub
-urllib3<2
+# Install the engine you actually use:
+#   requirements-argos.txt    argostranslate
+#   requirements-marian.txt   torch, transformers, and the Marian runtime
+-r requirements-argos.txt
