@@ -53,6 +53,9 @@ async function loadSettings() {
     const settings = await window.snapTranslate.getSettings();
     sourceLangEl.value = settings.sourceLang || 'auto';
     targetLangEl.value = settings.targetLang || 'zh-CN';
+    if (settings.configured === false) {
+      setStatus('尚未配置翻译接口，请打开设置填写接口类型和地址。', 'error');
+    }
   } catch (error) {
     setStatus('加载设置失败。', 'error');
   }

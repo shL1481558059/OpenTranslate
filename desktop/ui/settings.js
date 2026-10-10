@@ -3,17 +3,17 @@ import './webawesome.js';
 import { initPageTransition, navigateWithTransition } from './page-transition.js';
 
 const formEl = document.getElementById('settingsForm');
-const engineEl = document.getElementById('engine');
+const providerEl = document.getElementById('provider');
 const themeEl = document.getElementById('theme');
 const sourceLangEl = document.getElementById('sourceLang');
 const targetLangEl = document.getElementById('targetLang');
-const translationApiUrlEl = document.getElementById('translationApiUrl');
-const apiSectionEl = document.getElementById('apiSection');
-const llmApiUrlEl = document.getElementById('llmApiUrl');
-const llmApiKeyEl = document.getElementById('llmApiKey');
-const llmModelEl = document.getElementById('llmModel');
+const baseUrlEl = document.getElementById('baseUrl');
+const apiKeyEl = document.getElementById('apiKey');
+const modelEl = document.getElementById('model');
+const promptEl = document.getElementById('prompt');
+const openaiFieldsEl = document.getElementById('openaiFields');
+const testBtn = document.getElementById('testBtn');
 const hotkeyEl = document.getElementById('hotkey');
-const llmFieldsEl = document.getElementById('llmFields');
 const statusEl = document.getElementById('status');
 const backBtn = document.getElementById('backBtn');
 const saveBtn = document.getElementById('saveBtn');
@@ -61,8 +61,24 @@ const SPECIAL_ACCELERATOR_KEYS = {
   Insert: 'Insert'
 };
 const HOTKEY_CLEAR_KEYS = new Set(['Escape', 'Backspace', 'Delete']);
+const PROVIDER_FIELDS = {
+  deepl: {
+    placeholder: 'https://api-free.deepl.com',
+    hint: '官方地址：免费版 https://api-free.deepl.com，专业版 https://api.deepl.com。',
+    key: '必填。请求使用 Authorization: DeepL-Auth-Key。'
+  },
+  deeplx: {
+    placeholder: 'http://localhost:7100/deeplx',
+    hint: '填写完整地址，例如本地 LinguaSpark 的 http://localhost:7100/deeplx。',
+    key: '可选。填写后请求会带 Authorization: Bearer。'
+  },
+  openai: {
+    placeholder: 'https://api.openai.com',
+    hint: 'OpenAI 或兼容服务的根地址。末尾已有 /v1 时不会重复拼接。',
+    key: '必填。请求使用 Authorization: Bearer。'
+  }
+};
 let hotkeyBinding = false;
-let cachedApiUrl = '';
 let launchAtLoginState = null;
 
 function getStatusVariant(type) {
@@ -163,17 +179,31 @@ async function clearHotkeyInput() {
   }
 }
 
-function updateModeFields() {
-  const engine = engineEl.value;
-  llmFieldsEl.hidden = engine !== 'llm';
-  apiSectionEl.hidden = engine !== 'api';
+function currentProvider() {
+  return PROVIDER_FIELDS[providerEl.value] ? providerEl.value : 'deepl';
+}
 
-  if (engine === 'api') {
-    translationApiUrlEl.readOnly = false;
-    translationApiUrlEl.value = cachedApiUrl || '';
-  } else {
-    translationApiUrlEl.readOnly = true;
-  }
+function updateProviderFields() {
+  const provider = currentProvider();
+  const fields = PROVIDER_FIELDS[provider];
+  baseUrlEl.placeholder = fields.placeholder;
+  baseUrlEl.hint = fields.hint;
+  apiKeyEl.hint = fields.key;
+  openaiFieldsEl.hidden = provider !== 'openai';
+}
+
+function currentPayload() {
+  return {
+    provider: currentProvider(),
+    theme: normalizeThemePreference(themeEl.value),
+    sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
+    targetLang: normalizeLang(targetLangEl.value, 'zh-CN'),
+    baseUrl: baseUrlEl.value.trim(),
+    apiKey: apiKeyEl.value.trim(),
+    model: modelEl.value.trim(),
+    prompt: promptEl.value.trim(),
+    launchAtLogin: !!launchAtLoginEl.checked
+  };
 }
 
 function normalizeLang(value, fallback) {
@@ -226,32 +256,29 @@ function buildAccelerator(event) {
 async function loadSettings() {
   try {
     const settings = await window.snapTranslate.getSettings();
-    engineEl.value = settings.engine || 'api';
+    providerEl.value = settings.provider || 'deepl';
     themeEl.value = normalizeThemePreference(settings.theme);
     sourceLangEl.value = settings.sourceLang || 'auto';
     targetLangEl.value = settings.targetLang || 'zh-CN';
-    cachedApiUrl = settings.translationApiUrl || '';
-    translationApiUrlEl.value = cachedApiUrl;
-    llmApiUrlEl.value = settings.llmApiUrl || '';
-    llmApiKeyEl.value = settings.llmApiKey || '';
-    llmModelEl.value = settings.llmModel || '';
+    baseUrlEl.value = settings.baseUrl || '';
+    apiKeyEl.value = settings.apiKey || '';
+    modelEl.value = settings.model || 'gpt-4o-mini';
+    promptEl.value = settings.prompt || '';
     hotkeyEl.value = settings.hotkey || '';
     hotkeyEl.readOnly = true;
     applyLaunchAtLoginState(settings);
-    updateModeFields();
+    updateProviderFields();
+    if (settings.configured === false) {
+      setStatus('尚未配置翻译接口。填写类型、Base URL 和 API Key 后可以测试连接。');
+    }
   } catch (error) {
     setStatus('加载设置失败。', 'error');
   }
 }
 
-engineEl.addEventListener('change', updateModeFields);
+providerEl.addEventListener('change', updateProviderFields);
 themeEl.addEventListener('change', () => {
   applyThemePreference(themeEl.value, { persist: false });
-});
-translationApiUrlEl.addEventListener('input', () => {
-  if (engineEl.value === 'api') {
-    cachedApiUrl = translationApiUrlEl.value.trim();
-  }
 });
 launchAtLoginEl.addEventListener('change', () => {
   syncLaunchAtLoginActions({
@@ -266,22 +293,7 @@ formEl.addEventListener('submit', async (event) => {
   setStatus('保存中…');
 
   try {
-    const payload = {
-      engine: engineEl.value,
-      theme: normalizeThemePreference(themeEl.value),
-      sourceLang: normalizeLang(sourceLangEl.value, 'auto'),
-      targetLang: normalizeLang(targetLangEl.value, 'zh-CN'),
-      llmApiUrl: llmApiUrlEl.value.trim(),
-      llmApiKey: llmApiKeyEl.value.trim(),
-      llmModel: llmModelEl.value.trim(),
-      launchAtLogin: !!launchAtLoginEl.checked
-    };
-
-    if (engineEl.value === 'api') {
-      payload.translationApiUrl = translationApiUrlEl.value.trim();
-    }
-
-    const result = await window.snapTranslate.setSettings(payload);
+    const result = await window.snapTranslate.setSettings(currentPayload());
     applyReturnedSettings(result);
     if (!result.ok) {
       setStatus(getSettingsErrorMessage(result.error), 'error');
@@ -402,6 +414,33 @@ moveToApplicationsBtn?.addEventListener('click', async () => {
     setStatus(`移动失败：${getActionErrorMessage(error)}`, 'error');
   } finally {
     moveToApplicationsBtn.loading = false;
+  }
+});
+
+if (testBtn) {
+  testBtn.type = 'button';
+}
+
+testBtn?.addEventListener('click', async () => {
+  if (!window.snapTranslate?.testTranslation) {
+    setStatus('当前版本不支持测试连接。', 'error');
+    return;
+  }
+
+  testBtn.loading = true;
+  setStatus('正在测试连接…');
+
+  try {
+    const result = await window.snapTranslate.testTranslation(currentPayload());
+    if (!result?.ok) {
+      setStatus(result?.error || '连接失败。', 'error');
+      return;
+    }
+    setStatus(result.message || '连接成功。', 'success');
+  } catch (error) {
+    setStatus(`连接失败：${getActionErrorMessage(error)}`, 'error');
+  } finally {
+    testBtn.loading = false;
   }
 });
 

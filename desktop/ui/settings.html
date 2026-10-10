@@ -17,7 +17,7 @@
         <header class="shell-header">
           <div class="shell-copy">
             <h1>翻译设置</h1>
-            <p>接口、语言和快捷键都集中在这里，结构尽量保持简单直接。</p>
+            <p>翻译走外部接口。在这里选择 DeepL、DeepLX 或 OpenAI 兼容服务。</p>
           </div>
 
           <div class="actions">
@@ -31,14 +31,38 @@
         <form id="settingsForm" class="settings-grid">
           <section class="section-block">
             <div class="section-head">
-              <h2>翻译模式</h2>
-              <p>选择走翻译接口，还是直接连接 LLM。</p>
+              <h2>翻译接口</h2>
+              <p>不在本机部署翻译模型。DeepL 和 OpenAI 需要 API Key，DeepLX 的 Key 可选。</p>
             </div>
 
-            <wa-select id="engine" label="模式">
-              <wa-option value="api">翻译接口</wa-option>
-              <wa-option value="llm">直连 LLM</wa-option>
-            </wa-select>
+            <div class="settings-stack">
+              <wa-select id="provider" label="接口类型">
+                <wa-option value="deepl">DeepL</wa-option>
+                <wa-option value="deeplx">DeepLX</wa-option>
+                <wa-option value="openai">OpenAI 兼容</wa-option>
+              </wa-select>
+
+              <wa-input id="baseUrl" label="Base URL" autocomplete="off"></wa-input>
+
+              <wa-input id="apiKey" label="API Key" type="password" password-toggle autocomplete="off"></wa-input>
+              <p class="field-note">API Key 写入系统钥匙串。钥匙串不可用时保存在本机配置目录，权限仅限当前用户，不会写入 settings.json，也不会出现在日志里。</p>
+
+              <div id="openaiFields" class="settings-stack">
+                <wa-input id="model" label="Model" placeholder="gpt-4o-mini" autocomplete="off"></wa-input>
+                <wa-textarea
+                  id="prompt"
+                  label="自定义提示词"
+                  hint="可选。会附加在翻译指令之后，返回格式仍按编号 JSON 解析。"
+                  rows="4"
+                  resize="auto"
+                  placeholder="例如：保留专有名词，语气正式"
+                ></wa-textarea>
+              </div>
+
+              <div class="toggle-actions">
+                <wa-button id="testBtn" type="button" appearance="outlined" variant="neutral">测试连接</wa-button>
+              </div>
+            </div>
           </section>
 
           <section class="section-block">
@@ -70,41 +94,6 @@
               ></wa-input>
 
               <wa-input id="targetLang" label="目标语言" placeholder="zh-CN" autocomplete="off"></wa-input>
-            </div>
-          </section>
-
-          <section id="apiSection" class="section-block">
-            <div class="section-head">
-              <h2>接口配置</h2>
-              <p>翻译接口模式下会使用这里的地址。</p>
-            </div>
-
-            <wa-input
-              id="translationApiUrl"
-              label="翻译接口地址"
-              placeholder="http://127.0.0.1:8787/v2/translate"
-              autocomplete="off"
-            ></wa-input>
-          </section>
-
-          <section id="llmFields" class="section-block">
-            <div class="section-head">
-              <h2>LLM 配置</h2>
-              <p>支持 OpenAI 兼容接口。</p>
-            </div>
-
-            <div class="settings-stack">
-              <wa-input
-                id="llmApiUrl"
-                label="LLM API 地址"
-                placeholder="https://api.openai.com/v1"
-                autocomplete="off"
-              ></wa-input>
-
-              <div class="two-col">
-                <wa-input id="llmApiKey" label="LLM API Key" type="password" password-toggle autocomplete="off"></wa-input>
-                <wa-input id="llmModel" label="LLM Model" placeholder="gpt-4o-mini" autocomplete="off"></wa-input>
-              </div>
             </div>
           </section>
 
@@ -140,6 +129,6 @@
       </section>
     </main>
 
-    <script type="module" src="./settings.js?v=5"></script>
+    <script type="module" src="./settings.js?v=6"></script>
   </body>
 </html>

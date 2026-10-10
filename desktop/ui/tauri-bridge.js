@@ -69,6 +69,9 @@
         targetLang: options.targetLang
       });
     },
+    testTranslation(config) {
+      return tauri.core.invoke('test_translation', { config });
+    },
     openSettings(options = {}) {
       return tauri.core.invoke('open_settings', { nav: options.nav || null });
     },

@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
@@ -85,32 +84,13 @@ pub async fn run(app: AppHandle, rect: Rect) {
         .iter()
         .map(|block| block.get("text").and_then(|value| value.as_str()).unwrap_or("").to_string())
         .collect::<Vec<_>>();
-    let translated = if settings.engine == "llm" {
-        translate::translate_with_llm(
-            &settings.llm_api_url,
-            &settings.llm_api_key,
-            &settings.llm_model,
-            &texts,
-            &settings.source_lang,
-            &settings.target_lang,
-        )
-        .await
-    } else {
-        crate::embedded_api::wait_until_ready().await;
-        let progress_app = app.clone();
-        crate::embedded_api::set_progress_hook(Some(Arc::new(move |message| {
-            emit_status(&progress_app, rect, host, message, 0.35, "#ffffff");
-        })));
-        let result = translate::translate_texts(
-            &settings.translation_api_url,
-            &texts,
-            &settings.source_lang,
-            &settings.target_lang,
-        )
-        .await;
-        crate::embedded_api::set_progress_hook(None);
-        result
-    };
+    let translated = translate::translate(
+        &settings.translation(),
+        &texts,
+        &settings.source_lang,
+        &settings.target_lang,
+    )
+    .await;
     let translated = match translated {
         Ok(items) => items,
         Err(error) => {

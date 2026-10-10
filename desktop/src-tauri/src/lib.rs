@@ -1,12 +1,11 @@
 mod capture;
 mod cursor;
-mod deepl;
-mod embedded_api;
 mod hotkey;
 mod layout;
 mod ocr_models;
 mod paths;
 mod pipeline;
+mod secrets;
 mod settings;
 mod translate;
 
@@ -35,12 +34,7 @@ pub struct AppState {
     pub selecting: AtomicBool,
 }
 
-pub fn serve_api_blocking() -> i32 {
-    embedded_api::serve_blocking()
-}
-
 pub fn run() {
-    let settings = Settings::load(&settings_path_early());
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
@@ -69,27 +63,25 @@ pub fn run() {
                 .build(),
         )
         .manage(AppState {
-            settings: Mutex::new(settings),
+            settings: Mutex::new(Settings::defaults()),
             ready: Mutex::new(HashSet::new()),
             selecting: AtomicBool::new(false),
         })
         .setup(|app| {
             configure_runtime(app.handle());
+            let loaded = Settings::load(&settings_path(app.handle()));
+            let hotkey = loaded.hotkey.clone();
+            if let Ok(mut guard) = app.state::<AppState>().settings.lock() {
+                *guard = loaded;
+            }
             if let Err(error) = install_tray(app.handle()) {
                 eprintln!("[tray] {error}");
             }
-            let hotkey = app
-                .state::<AppState>()
-                .settings
-                .lock()
-                .map(|guard| guard.hotkey.clone())
-                .unwrap_or_default();
             if let Err(error) = apply_hotkey(app.handle(), &hotkey) {
                 eprintln!("[hotkey] {error}");
             } else if !hotkey.is_empty() {
                 eprintln!("[hotkey] ready: {hotkey}");
             }
-            embedded_api::spawn(api_paths(app.handle()));
             let ocr_dir = paths::ocr_dir(app.handle());
             if ocr_models::present(&ocr_dir) {
                 std::thread::spawn(|| {
@@ -130,42 +122,12 @@ pub fn run() {
             open_translate,
             hotkey_update,
             translate_text,
+            test_translation,
             clipboard_write_text,
             ui_listener_ready
         ])
         .run(tauri::generate_context!())
         .expect("OpenTranslate failed to start");
-}
-
-fn api_paths(app: &AppHandle) -> embedded_api::ApiPaths {
-    let resources = paths::resource_root(app);
-    let data = paths::data_dir(app);
-    let packaged = paths::is_packaged();
-    let api_dir = {
-        let bundled = resources.join("api");
-        if bundled.join("local").join("argos_worker.py").exists() { bundled } else { paths::repo_root().join("api") }
-    };
-    let work_dir = if packaged { data.clone() } else { paths::repo_root() };
-    let config_path = if packaged {
-        let stored = data.join("config.json");
-        if !stored.exists() {
-            let _ = std::fs::create_dir_all(&data);
-            let seed = api_dir.join("config.json");
-            if seed.exists() {
-                let _ = std::fs::copy(&seed, &stored);
-            }
-        }
-        stored
-    } else {
-        api_dir.join("config.json")
-    };
-    embedded_api::ApiPaths {
-        usage_path: if packaged { data.join("usage.json") } else { api_dir.join("usage.json") },
-        dotenv_path: if packaged { data.join(".env") } else { paths::repo_root().join(".env") },
-        api_dir,
-        work_dir,
-        config_path,
-    }
 }
 
 fn configure_runtime(app: &AppHandle) {
@@ -506,7 +468,17 @@ fn settings_set(app: AppHandle, settings: Value) -> Value {
         .and_then(|value| value.as_bool())
         .and_then(|enabled| update_launch(&app, enabled).err());
     let next = current.merged(&patch);
-    let _ = next.save(&settings_path(&app));
+    let settings_file = settings_path(&app);
+    if patch.get("apiKey").is_some() {
+        if let Err(error) = secrets::store(&settings_file, &next.api_key) {
+            return json!({
+                "ok": false,
+                "error": error,
+                "settings": current.to_public(launch_state(&app))
+            });
+        }
+    }
+    let _ = next.save(&settings_file);
     if let Ok(mut guard) = state.settings.lock() {
         *guard = next.clone();
     }
@@ -625,16 +597,29 @@ async fn translate_text(app: AppHandle, text: String, source_lang: Option<String
         .lock()
         .map(|guard| guard.clone())
         .unwrap_or_else(|error| error.into_inner().clone());
-    let source = source_lang.unwrap_or(settings.source_lang);
-    let target = target_lang.unwrap_or(settings.target_lang);
-    let result = if settings.engine == "llm" {
-        translate::translate_with_llm(&settings.llm_api_url, &settings.llm_api_key, &settings.llm_model, &[text], &source, &target).await
-    } else {
-        embedded_api::wait_until_ready().await;
-        translate::translate_texts(&settings.translation_api_url, &[text], &source, &target).await
-    };
+    let source = source_lang.unwrap_or(settings.source_lang.clone());
+    let target = target_lang.unwrap_or(settings.target_lang.clone());
+    let result = translate::translate(&settings.translation(), &[text], &source, &target).await;
     match result {
         Ok(items) => json!({ "ok": true, "text": items.first().cloned().unwrap_or_default(), "confidence": 1 }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
+#[tauri::command]
+async fn test_translation(app: AppHandle, config: Option<Value>) -> Value {
+    let current = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|error| error.into_inner().clone());
+    let next = match config {
+        Some(config) => current.merged(&config),
+        None => current,
+    };
+    match translate::test_connection(&next.translation()).await {
+        Ok(message) => json!({ "ok": true, "message": message }),
         Err(error) => json!({ "ok": false, "error": error }),
     }
 }

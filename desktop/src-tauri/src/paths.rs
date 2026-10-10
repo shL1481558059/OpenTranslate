@@ -12,7 +12,7 @@ pub fn is_packaged() -> bool {
 
 pub fn resource_root(app: &AppHandle) -> PathBuf {
     if let Ok(dir) = app.path().resource_dir() {
-        if dir.join("api").join("server.js").exists() {
+        if dir.join("swift").join("vision_ocr.swift").exists() {
             return dir;
         }
     }

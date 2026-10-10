@@ -1,6 +1,6 @@
 # OpenTranslate
 
-Screenshot translation for macOS, Windows, and Linux. The desktop app is Tauri v2. The translation HTTP service is embedded in the Tauri process, speaks the DeepL API v2 contract, and runs Argos through a local Python worker. The standalone Node server remains available for Docker and the test suite.
+Screenshot translation for macOS, Windows, and Linux. The desktop app is Tauri v2. Translation is done only by calling an external API. The app does not ship a translation model or run a translation service.
 
 ## What it does
 
@@ -10,12 +10,12 @@ Screenshot translation for macOS, Windows, and Linux. The desktop app is Tauri v
 - Copy the source or the translation, plus a manual translate window
 - Settings for theme, languages, shortcut, and launch at login
 - Tray icon
+- DeepL, DeepLX, and OpenAI-compatible providers, with a connection test in Settings
 
 ## Layout
 
-- `desktop/`: Tauri shell and the existing HTML UI
-- `desktop/src-tauri/`: Rust app, screenshot capture, and OCR
-- `api/`: DeepL-compatible translation service (`POST /v2/translate`)
+- `desktop/`: Tauri shell and the HTML UI
+- `desktop/src-tauri/`: Rust app, screenshot capture, OCR, and the translation client
 - `desktop/src-tauri/models/ocr/`: optional local copy of the PP-OCRv4 models. Installers do not ship them; Linux downloads them on first OCR.
 
 ## OCR
@@ -34,42 +34,43 @@ Requirements: Node.js 20+, Rust stable, and the Tauri system packages for your O
 
 ```bash
 npm install
-cp .env.example .env
 npm run start:desktop
 ```
 
-`npm run start:desktop` serves the UI and starts the Tauri shell. The shell listens on `127.0.0.1:8787` from inside the app process. Environment variables in `.env` override `api/config.json`. Overlay layout runs inside the app and does not call Node.
+Open Settings, pick a provider, and fill in the base URL. Manual translation and the overlay both point at Settings until that is done. The API key is stored in the system keychain when that is available. Otherwise it is written to an `api-key` file with mode `0600` next to the settings file. It is not written to `settings.json` and it is not logged.
 
-For Argos, set `TRANSLATION_ENGINE=argos` and put `.argosmodel` files in `models/argos/`. The first translation creates `./.venv` and installs only `argostranslate`. Marian (`TRANSLATION_ENGINE=marian`) installs torch and transformers into that environment when it is first selected. The interpreter is `.venv/bin/python` on macOS and Linux, and `.venv\Scripts\python.exe` on Windows.
+Optional process environment variables, used only when a value has not already been saved: `OPENTRANSLATE_PROVIDER`, `OPENTRANSLATE_BASE_URL`, `OPENTRANSLATE_API_KEY`, `OPENTRANSLATE_MODEL`, `OPENTRANSLATE_PROMPT`. The app does not load a `.env` file by itself.
 
 ```bash
 npm test
-npm run start:api
+cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib -- translate settings
 ```
 
-## Translation API
+## Translation providers
 
-`POST /v2/translate` accepts JSON and `application/x-www-form-urlencoded`.
+Each provider uses a 20 second timeout and retries once on network errors, timeouts, and HTTP 429/5xx. HTTP 401, 403, and 400 are not retried. Language codes are mapped for the provider in use.
 
-```json
-{ "text": ["Hello"], "target_lang": "ZH" }
-```
+### Official DeepL
 
-```json
-{ "translations": [{ "detected_source_language": "EN", "text": "你好" }] }
-```
+Choose **DeepL**. The free base URL is `https://api-free.deepl.com`. The Pro base URL is `https://api.deepl.com`. The API key is required and is sent as `Authorization: DeepL-Auth-Key <key>`.
 
-`target_lang` is required. `source_lang` is optional and language codes are case-insensitive (`ZH`, `ZH-HANS`, `ZH-HANT`, `EN-US`, `EN-GB`, and the other DeepL codes). Extra DeepL fields are accepted. `GET /v2/usage` and `GET /v2/languages` are included.
+OCR blocks are posted together to `POST {base}/v2/translate` as a `text` array. `zh-CN` becomes `ZH`, and a target of `en` becomes `EN-US`. The connection test calls `GET {base}/v2/usage`.
 
-If `DEEPL_AUTH_KEY` (or `TRANSLATION_API_KEY`) is empty, only loopback clients may call `/v2/*`. Otherwise send `Authorization: DeepL-Auth-Key <key>`. `Authorization: Bearer <key>` and `auth_key` are also accepted.
+### Local LinguaSpark (DeepLX)
 
-The admin UI at `http://127.0.0.1:8787/admin` can try `/v2/translate` and still manages Argos and Marian models through `/v1/config` and `/v1/models/*`.
+Choose **DeepLX** and set the base URL to the full endpoint, for example `http://localhost:7100/deeplx`. The API key is optional. When it is set, the request adds `Authorization: Bearer`.
 
-## How the API is packaged
+DeepLX translates one string per call. OCR blocks are requested concurrently, with at most 4 in flight. The body is `{ "text", "source_lang", "target_lang" }`, and the translation is the `data` field. A source of `auto` is sent as `auto`.
 
-The desktop process embeds the DeepL-compatible HTTP service and the overlay layout. Release builds strip debug symbols. Installers include `api/` (Python workers and the admin page) and the Apple Vision Swift source. They do not include a Node runtime or the PP-OCRv4 models. macOS and Windows use the system OCR engines. Linux downloads `det.onnx`, `rec.onnx`, and `keys.txt` on first OCR and reports a clear error if that download fails.
+### OpenAI-compatible
 
-`npm run start:api` and Docker still run the Node server in `api/server.js`. The Node server is what `npm test` exercises. The packaged app does not start it.
+Choose **OpenAI-compatible**. A base URL such as `https://api.openai.com` is posted to `{base}/v1/chat/completions`. A base that already ends in `/v1` is posted to `{base}/chat/completions` instead. The API key is sent as `Authorization: Bearer`. The model defaults to `gpt-4o-mini`. An optional custom prompt is appended after the fixed JSON instruction.
+
+OCR blocks are merged into one request. The model must return `{"items":[{"id":"1","text":"..."}]}` so the blocks can be split back by id. If that parse fails, the client retries one block at a time.
+
+## Installers
+
+Release builds strip debug symbols. Installers include the Apple Vision Swift source. They do not include a translation model, a translation service, a Node runtime, or the PP-OCRv4 models. macOS and Windows use the system OCR engines. Linux downloads `det.onnx`, `rec.onnx`, and `keys.txt` on first OCR and reports a clear error if that download fails.
 
 ```bash
 npm run dist

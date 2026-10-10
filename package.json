@@ -3,9 +3,8 @@
   "productName": "OpenTranslate",
   "version": "0.1.0",
   "private": true,
-  "description": "Screenshot translate desktop app (Tauri) with a local DeepL-compatible translation API",
+  "description": "Screenshot translate desktop app (Tauri) that calls an external translation API",
   "scripts": {
-    "start:api": "node api/server.js",
     "start:desktop": "node scripts/run-tauri.js dev",
     "dist": "node scripts/run-tauri.js build",
     "test": "node --test tests/*.test.js"

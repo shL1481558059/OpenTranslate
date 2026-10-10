@@ -50,7 +50,7 @@ jobs:
               name: `OpenTranslate ${tag}`,
               body: [
                 'OpenTranslate desktop installers.',
-                'Each package embeds a DeepL-compatible `/v2/translate` service in the desktop process. macOS uses Apple Vision, Windows uses Windows.Media.Ocr, and Linux downloads PP-OCRv4 models on first OCR.',
+                'Translation calls an external DeepL, DeepLX, or OpenAI-compatible API. macOS uses Apple Vision, Windows uses Windows.Media.Ocr, and Linux downloads PP-OCRv4 models on first OCR.',
               ].join('\n'),
               draft: true,
             });
@@ -123,6 +123,6 @@ jobs:
           releaseName: OpenTranslate ${{ needs.create-release.outputs.tag_name }}
           releaseBody: |
             OpenTranslate desktop installers.
-            Each package embeds a DeepL-compatible `/v2/translate` service in the desktop process. macOS uses Apple Vision, Windows uses Windows.Media.Ocr, and Linux downloads PP-OCRv4 models on first OCR.
+            Translation calls an external DeepL, DeepLX, or OpenAI-compatible API. macOS uses Apple Vision, Windows uses Windows.Media.Ocr, and Linux downloads PP-OCRv4 models on first OCR.
           releaseDraft: true
           args: ${{ matrix.args }}
