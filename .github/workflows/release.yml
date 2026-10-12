@@ -124,5 +124,25 @@ jobs:
           releaseBody: |
             OpenTranslate desktop installers.
             Translation calls an external DeepL, DeepLX, or OpenAI-compatible API. macOS uses Apple Vision, Windows uses Windows.Media.Ocr, and Linux downloads PP-OCRv4 models on first OCR.
+          # Keep the release a draft while installers upload. The publish job
+          # clears the draft only after every platform job succeeds.
           releaseDraft: true
           args: ${{ matrix.args }}
+
+  publish:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const releaseId = Number('${{ needs.create-release.outputs.release_id }}');
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId,
+              draft: false,
+              make_latest: 'true',
+            });
+            core.info(`Published release ${releaseId}`);
