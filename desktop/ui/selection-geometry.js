@@ -12,16 +12,21 @@
     return Math.abs(startClient.x - endClient.x) < limit && Math.abs(startClient.y - endClient.y) < limit;
   }
 
-  function clientToScreen(client, origin) {
+  function scaleOf(scale) {
+    return Number.isFinite(scale) && scale > 0 ? scale : 1;
+  }
+
+  function clientToScreen(client, origin, scale) {
+    const factor = scaleOf(scale);
     return {
-      x: Math.round(origin.x + client.x),
-      y: Math.round(origin.y + client.y)
+      x: Math.round(origin.x + client.x * factor),
+      y: Math.round(origin.y + client.y * factor)
     };
   }
 
-  function dragRect(startClient, endClient, origin) {
-    const start = clientToScreen(startClient, origin);
-    const end = clientToScreen(endClient, origin);
+  function dragRect(startClient, endClient, origin, scale) {
+    const start = clientToScreen(startClient, origin, scale);
+    const end = clientToScreen(endClient, origin, scale);
     return {
       x: Math.min(start.x, end.x),
       y: Math.min(start.y, end.y),
@@ -51,6 +56,7 @@
     isClick,
     clientToScreen,
     dragRect,
-    clampRect
+    clampRect,
+    scaleOf
   };
 });

@@ -22,6 +22,16 @@ test('drag size follows the pointer, not a mix of monitor and webview origins', 
   assert.ok(rect.height >= 6);
 });
 
+test('hidpi drag maps css pixels through the webview scale', () => {
+  const start = { x: 100, y: 105.5 };
+  const end = { x: 450, y: 335.5 };
+  const rect = dragRect(start, end, { x: 0, y: 29 }, 2);
+  assert.equal(rect.x, 200);
+  assert.equal(rect.y, 240);
+  assert.equal(rect.width, 700);
+  assert.equal(rect.height, 460);
+});
+
 test('movement under six pixels is a click and six pixels is a drag', () => {
   assert.equal(isClick({ x: 10, y: 10 }, { x: 15, y: 14 }), true);
   assert.equal(isClick({ x: 10, y: 10 }, { x: 16, y: 10 }), false);

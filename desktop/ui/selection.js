@@ -30,6 +30,7 @@ let webviewOrigin = {
   x: Number.isFinite(window.screenX) ? window.screenX : 0,
   y: Number.isFinite(window.screenY) ? window.screenY : 0
 };
+let pageScale = 1;
 let activePointer = null;
 let lastClient = null;
 let windowRects = [];
@@ -86,13 +87,25 @@ function resizeMask() {
   maskSvg.setAttribute('viewBox', `0 0 ${width} ${height}`);
 }
 
+function currentScale() {
+  const dpr = Number(window.devicePixelRatio);
+  if (Number.isFinite(dpr) && dpr > 1) {
+    return dpr;
+  }
+  if (Number.isFinite(pageScale) && pageScale > 0) {
+    return pageScale;
+  }
+  return 1;
+}
+
 function toClientRect(rect) {
   if (!rect) return null;
+  const scale = currentScale();
   return {
-    x: rect.x - webviewOrigin.x,
-    y: rect.y - webviewOrigin.y,
-    width: rect.width,
-    height: rect.height
+    x: (rect.x - webviewOrigin.x) / scale,
+    y: (rect.y - webviewOrigin.y) / scale,
+    width: rect.width / scale,
+    height: rect.height / scale
   };
 }
 
@@ -184,7 +197,10 @@ function hitTestWindow(point) {
     return hoveredWindow;
   }
 
-  for (let index = windowRects.length - 1; index >= 0; index -= 1) {
+  // xcap lists the front window first. Scanning from the back made the
+  // fullscreen desktop win every hit, so a click never landed on the window
+  // under the pointer.
+  for (let index = 0; index < windowRects.length; index += 1) {
     const win = windowRects[index];
     if (isPointInsideRect(point, win)) {
       return win;
@@ -195,7 +211,7 @@ function hitTestWindow(point) {
 
 function toScreenPoint(pointer) {
   if (Number.isFinite(pointer?.clientX) && Number.isFinite(pointer?.clientY)) {
-    return window.selectionGeometry.clientToScreen(getClientPoint(pointer), webviewOrigin);
+    return window.selectionGeometry.clientToScreen(getClientPoint(pointer), webviewOrigin, currentScale());
   }
 
   return {
@@ -226,12 +242,13 @@ function getRenderedSelectionRect() {
   if (!width || !height) {
     return null;
   }
+  const scale = currentScale();
   return window.selectionGeometry.clampRect(
     {
-      x: Math.round(webviewOrigin.x + bounds.left),
-      y: Math.round(webviewOrigin.y + bounds.top),
-      width,
-      height
+      x: Math.round(webviewOrigin.x + bounds.left * scale),
+      y: Math.round(webviewOrigin.y + bounds.top * scale),
+      width: Math.round(width * scale),
+      height: Math.round(height * scale)
     },
     displayBounds
   );
@@ -284,7 +301,7 @@ async function finishSelection(endClient) {
     return;
   }
   renderRect(startClient, endClient);
-  const endScreen = window.selectionGeometry.clientToScreen(endClient, webviewOrigin);
+  const endScreen = window.selectionGeometry.clientToScreen(endClient, webviewOrigin, currentScale());
   let rect;
 
   if (window.selectionGeometry.isClick(startClient, endClient, CLICK_DISTANCE)) {
@@ -310,7 +327,7 @@ async function finishSelection(endClient) {
     }
   } else {
     rect = window.selectionGeometry.clampRect(
-      window.selectionGeometry.dragRect(startClient, endClient, webviewOrigin),
+      window.selectionGeometry.dragRect(startClient, endClient, webviewOrigin, currentScale()),
       displayBounds
     );
   }
@@ -337,7 +354,7 @@ window.addEventListener('pointerdown', (event) => {
     // capture is a best effort; pointerup on window still completes the drag
   }
   startClient = getClientPoint(event);
-  startScreen = window.selectionGeometry.clientToScreen(startClient, webviewOrigin);
+  startScreen = window.selectionGeometry.clientToScreen(startClient, webviewOrigin, currentScale());
   lastClient = startClient;
   renderRect(startClient, startClient);
 });
@@ -408,6 +425,9 @@ if (window.snapTranslate?.onSelectionWindows) {
     if (payload?.displayBounds) {
       displayBounds = payload.displayBounds;
     }
+    if (Number.isFinite(payload?.scale) && payload.scale > 0) {
+      pageScale = payload.scale;
+    }
     if (Number.isFinite(payload?.webviewOrigin?.x) && Number.isFinite(payload?.webviewOrigin?.y)) {
       webviewOrigin = {
         x: payload.webviewOrigin.x,
@@ -433,11 +453,16 @@ resizeMask();
 redrawMask();
 rebuildSnapEdges([]);
 window.addEventListener('resize', () => {
-  displayBounds = {
-    ...displayBounds,
-    width: window.innerWidth || displayBounds.width,
-    height: window.innerHeight || displayBounds.height
-  };
+  const scale = currentScale();
+  const width = Math.round((window.innerWidth || 0) * scale);
+  const height = Math.round((window.innerHeight || 0) * scale);
+  if (width > 0 && height > 0) {
+    displayBounds = {
+      ...displayBounds,
+      width,
+      height
+    };
+  }
   resizeMask();
   redrawMask();
 });

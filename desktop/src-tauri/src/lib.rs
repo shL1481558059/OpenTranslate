@@ -170,7 +170,7 @@ fn tray_icon_bytes() -> &'static [u8] {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        include_bytes!("../../assets/tray-icon-64.png")
+        include_bytes!("../icons/128x128.png")
     }
 }
 
@@ -216,9 +216,62 @@ fn set_linux_icon_list(window: &tauri::WebviewWindow) {
     if icons.is_empty() {
         return;
     }
+    install_user_hicolor_icons();
     gtk_window.set_icon(Some(&icons[icons.len() - 1]));
     gtk_window.set_icon_list(&icons);
     publish_net_wm_icon(window);
+}
+
+#[cfg(target_os = "linux")]
+fn install_user_hicolor_icons() {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let base = std::path::PathBuf::from(home)
+        .join(".local/share/icons/hicolor");
+    let files: &[(&str, &str, &[u8])] = &[
+        (
+            "scalable/apps",
+            "opentranslate.svg",
+            include_bytes!("../icons/opentranslate.svg"),
+        ),
+        (
+            "48x48/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/48x48.png"),
+        ),
+        (
+            "64x64/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/64x64.png"),
+        ),
+        (
+            "128x128/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/128x128.png"),
+        ),
+        (
+            "256x256/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/256x256.png"),
+        ),
+        (
+            "512x512/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/512x512.png"),
+        ),
+    ];
+    for (dir, name, bytes) in files {
+        let path = base.join(dir).join(name);
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                continue;
+            }
+        }
+        if std::fs::write(&path, bytes).is_err() {
+            eprintln!("[icon] failed to install {}", path.display());
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -254,11 +307,16 @@ fn publish_net_wm_icon(window: &tauri::WebviewWindow) {
         _ => return,
     };
     let mut data: Vec<c_long> = Vec::new();
+    // Largest first. Some docks use the first icon and scale it; a 32px
+    // bitmap stretched into a HiDPI dock slot is the pixelated OT mark.
+    // 512+256 fit in XExtendedMaxRequestSize (BIG-REQUESTS), not the 64KB default.
     for bytes in [
-        include_bytes!("../icons/32x32.png").as_slice(),
-        include_bytes!("../icons/48x48.png").as_slice(),
-        include_bytes!("../icons/64x64.png").as_slice(),
+        include_bytes!("../icons/512x512.png").as_slice(),
+        include_bytes!("../icons/256x256.png").as_slice(),
         include_bytes!("../icons/128x128.png").as_slice(),
+        include_bytes!("../icons/64x64.png").as_slice(),
+        include_bytes!("../icons/48x48.png").as_slice(),
+        include_bytes!("../icons/32x32.png").as_slice(),
     ] {
         let Ok(image) = image::load_from_memory(bytes) else {
             continue;
@@ -275,27 +333,31 @@ fn publish_net_wm_icon(window: &tauri::WebviewWindow) {
         }
     }
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(700));
-        unsafe {
-            let display = XOpenDisplay(std::ptr::null());
-            if display.is_null() {
-                return;
+        // GTK clears _NET_WM_ICON while mapping. Rewrite after that, then once
+        // more in case the toolkit sets a small icon list of its own.
+        for delay_ms in [700_u64, 1800] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            unsafe {
+                let display = XOpenDisplay(std::ptr::null());
+                if display.is_null() {
+                    return;
+                }
+                let property = XInternAtom(display, b"_NET_WM_ICON\0".as_ptr().cast(), 0);
+                let kind = XInternAtom(display, b"CARDINAL\0".as_ptr().cast(), 0);
+                XChangeProperty(
+                    display,
+                    xid,
+                    property,
+                    kind,
+                    32,
+                    0,
+                    data.as_ptr().cast(),
+                    data.len() as c_int,
+                );
+                XSync(display, 0);
+                XFlush(display);
+                XCloseDisplay(display);
             }
-            let property = XInternAtom(display, b"_NET_WM_ICON\0".as_ptr().cast(), 0);
-            let kind = XInternAtom(display, b"CARDINAL\0".as_ptr().cast(), 0);
-            XChangeProperty(
-                display,
-                xid,
-                property,
-                kind,
-                32,
-                0,
-                data.as_ptr().cast(),
-                data.len() as c_int,
-            );
-            XSync(display, 0);
-            XFlush(display);
-            XCloseDisplay(display);
         }
     });
 }
@@ -383,6 +445,7 @@ fn open_selection(app: &AppHandle) {
         .register(Shortcut::new(None, Code::Escape));
     if let Some(window) = app.get_webview_window("selection") {
         let _ = window.show();
+        pin_capture_window(&window, host);
         let _ = window.set_focus();
     }
     let windows = capture::list_windows(host);
@@ -404,9 +467,10 @@ fn emit_selection_windows(app: &AppHandle, host: Rect, windows: &[capture::SnapW
     let origin = window
         .inner_position()
         .unwrap_or(PhysicalPosition::new(host.x, host.y));
+    let scale = window.scale_factor().unwrap_or(1.0);
     eprintln!(
-        "[selection] webview origin {},{} host {},{}",
-        origin.x, origin.y, host.x, host.y
+        "[selection] webview origin {},{} host {},{} {}x{} scale {}",
+        origin.x, origin.y, host.x, host.y, host.width, host.height, scale
     );
     let _ = window.emit(
         "selection-windows",
@@ -414,6 +478,7 @@ fn emit_selection_windows(app: &AppHandle, host: Rect, windows: &[capture::SnapW
             "windows": windows,
             "displayBounds": host,
             "webviewOrigin": { "x": origin.x, "y": origin.y },
+            "scale": scale,
             "requiresAccessibility": false,
             "requiresScreenRecording": false
         }),
@@ -527,16 +592,49 @@ pub fn place_window(app: &AppHandle, label: &str, rect: Rect) {
             .focused(label == "selection")
             .shadow(false)
             .build();
+        if let Some(window) = app.get_webview_window(label) {
+            prepare_capture_window(&window);
+        }
     }
     if let Some(window) = app.get_webview_window(label) {
-        let _ = window.set_position(Position::Physical(PhysicalPosition::new(rect.x, rect.y)));
-        let _ = window.set_size(Size::Physical(PhysicalSize::new(
-            rect.width.max(1) as u32,
-            rect.height.max(1) as u32,
-        )));
-        // Leave the window where the window manager places it. A top panel can
-        // clamp y, and pushing back by that delta makes the origin jump.
+        pin_capture_window(&window, rect);
         let _ = window.set_always_on_top(true);
+    }
+}
+
+pub(crate) fn pin_capture_window(window: &WebviewWindow, rect: Rect) {
+    let _ = window.set_position(Position::Physical(PhysicalPosition::new(rect.x, rect.y)));
+    let _ = window.set_size(Size::Physical(PhysicalSize::new(
+        rect.width.max(1) as u32,
+        rect.height.max(1) as u32,
+    )));
+}
+
+fn prepare_capture_window(window: &WebviewWindow) {
+    // A normal window is shoved below the top panel (about 29px here) while
+    // keeping the full monitor height, so the shade starts in the wrong place
+    // and the bottom hangs off the screen. An override-redirect splash covers
+    // the monitor from its real origin, including the panel.
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::{GtkWindowExt, WidgetExt};
+        let Ok(gtk_window) = window.gtk_window() else {
+            return;
+        };
+        gtk_window.set_decorated(false);
+        gtk_window.set_type_hint(gtk::gdk::WindowTypeHint::Splashscreen);
+        if let Some(gdk_window) = gtk_window.window() {
+            gdk_window.set_override_redirect(true);
+        }
+        gtk_window.connect_realize(|widget| {
+            if let Some(gdk_window) = widget.window() {
+                gdk_window.set_override_redirect(true);
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
     }
 }
 

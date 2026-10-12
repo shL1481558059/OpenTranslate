@@ -197,9 +197,11 @@ pub async fn run(app: AppHandle, rect: Rect) {
     emit_overlay(&app, laid_out);
 }
 
-fn reveal_overlay(app: &AppHandle, _host: Rect) {
+fn reveal_overlay(app: &AppHandle, host: Rect) {
     if let Some(window) = app.get_webview_window("overlay") {
+        crate::pin_capture_window(&window, host);
         let _ = window.show();
+        crate::pin_capture_window(&window, host);
         let _ = window.set_ignore_cursor_events(true);
     }
     crate::set_overlay_visible(app, true);
@@ -434,6 +436,7 @@ fn compensate_frame(app: &AppHandle, payload: &mut Value) {
     let Ok(inner) = window.inner_position() else {
         return;
     };
+    let scale = window.scale_factor().unwrap_or(1.0);
     let origin_x = payload
         .get("overlayBounds")
         .and_then(|value| value.get("x"))
@@ -444,20 +447,98 @@ fn compensate_frame(app: &AppHandle, payload: &mut Value) {
         .and_then(|value| value.get("y"))
         .and_then(|value| value.as_i64())
         .unwrap_or(0) as i32;
-    let dx = origin_x - inner.x;
-    let dy = origin_y - inner.y;
-    if dx == 0 && dy == 0 {
-        return;
-    }
+    let host = Rect {
+        x: origin_x,
+        y: origin_y,
+        width: 0,
+        height: 0,
+    };
     for key in ["selectionRect", "controlRect"] {
-        let Some(rect) = payload.get_mut(key).and_then(|value| value.as_object_mut()) else {
+        let Some(rect) = payload.get(key) else {
             continue;
         };
-        if let Some(x) = rect.get("x").and_then(|value| value.as_f64()) {
-            rect.insert("x".into(), json!(x + dx as f64));
+        let Some(relative) = rect_from_value(rect) else {
+            continue;
+        };
+        let (x, y, width, height) = viewport_rect(relative, host, inner.x, inner.y, scale);
+        if let Some(object) = payload.get_mut(key).and_then(|value| value.as_object_mut()) {
+            object.insert("x".into(), json!(x));
+            object.insert("y".into(), json!(y));
+            object.insert("width".into(), json!(width));
+            object.insert("height".into(), json!(height));
         }
-        if let Some(y) = rect.get("y").and_then(|value| value.as_f64()) {
-            rect.insert("y".into(), json!(y + dy as f64));
+    }
+    scale_overlay_blocks(payload, scale);
+}
+
+fn rect_from_value(value: &Value) -> Option<Rect> {
+    Some(Rect {
+        x: value.get("x")?.as_f64()?.round() as i32,
+        y: value.get("y")?.as_f64()?.round() as i32,
+        width: value.get("width")?.as_f64()?.round() as i32,
+        height: value.get("height")?.as_f64()?.round() as i32,
+    })
+}
+
+/// selectionRect is host-relative framebuffer pixels. The overlay webview is
+/// CSS pixels (framebuffer / scale) and may sit below a panel. Convert both.
+pub(crate) fn viewport_rect(
+    host_relative: Rect,
+    host: Rect,
+    origin_x: i32,
+    origin_y: i32,
+    scale: f64,
+) -> (f64, f64, f64, f64) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let screen_x = f64::from(host.x) + f64::from(host_relative.x);
+    let screen_y = f64::from(host.y) + f64::from(host_relative.y);
+    (
+        (screen_x - f64::from(origin_x)) / scale,
+        (screen_y - f64::from(origin_y)) / scale,
+        f64::from(host_relative.width) / scale,
+        f64::from(host_relative.height) / scale,
+    )
+}
+
+fn scale_overlay_blocks(payload: &mut Value, scale: f64) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    if (scale - 1.0).abs() < 0.01 {
+        return;
+    }
+    let Some(blocks) = payload.get_mut("blocks").and_then(|value| value.as_array_mut()) else {
+        return;
+    };
+    for block in blocks {
+        if let Some(bbox) = block.get_mut("bbox").and_then(|value| value.as_object_mut()) {
+            for key in ["x", "y", "width", "height"] {
+                if let Some(value) = bbox.get(key).and_then(|value| value.as_f64()) {
+                    bbox.insert(key.into(), json!(value / scale));
+                }
+            }
+        }
+        if let Some(hint) = block
+            .get_mut("styleHint")
+            .and_then(|value| value.as_object_mut())
+        {
+            for key in [
+                "baseFontSize",
+                "minFontSize",
+                "fontSize",
+                "padding",
+                "verticalOffset",
+            ] {
+                if let Some(value) = hint.get(key).and_then(|value| value.as_f64()) {
+                    hint.insert(key.into(), json!(value / scale));
+                }
+            }
         }
     }
 }
@@ -491,7 +572,44 @@ fn remember_controls(app: &AppHandle, payload: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::meaningful_ocr;
+    use super::{meaningful_ocr, viewport_rect};
+    use crate::capture::Rect;
+
+    #[test]
+    fn overlay_viewport_keeps_scale_one_panel_offset() {
+        let relative = Rect {
+            x: 180,
+            y: 220,
+            width: 600,
+            height: 400,
+        };
+        let host = Rect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1200,
+        };
+        let (x, y, width, height) = viewport_rect(relative, host, 0, 29, 1.0);
+        assert_eq!((x, y, width, height), (180.0, 191.0, 600.0, 400.0));
+    }
+
+    #[test]
+    fn overlay_viewport_divides_hidpi_framebuffer_pixels() {
+        let relative = Rect {
+            x: 200,
+            y: 240,
+            width: 700,
+            height: 460,
+        };
+        let host = Rect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1200,
+        };
+        let (x, y, width, height) = viewport_rect(relative, host, 0, 29, 2.0);
+        assert_eq!((x, y, width, height), (100.0, 105.5, 350.0, 230.0));
+    }
 
     #[test]
     fn blank_and_status_chrome_are_not_text() {

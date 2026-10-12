@@ -42,7 +42,9 @@ pub fn list_windows(bounds: Rect) -> Vec<SnapWindow> {
             let app = window.app_name().unwrap_or_default();
             if title == "Selection"
                 || title == "Overlay"
-                || (app == "OpenTranslate" && title.is_empty())
+                || title == "Desktop"
+                || app.eq_ignore_ascii_case("xfdesktop")
+                || (app.eq_ignore_ascii_case("opentranslate") && title.is_empty())
             {
                 return None;
             }
@@ -90,11 +92,25 @@ fn frames_first(monitors: &[Monitor]) -> Option<Rect> {
 }
 
 fn monitor_rect(monitor: &Monitor) -> Result<Rect, String> {
+    // xcap divides RandR pixels by Xft.dpi/96. Font DPI is not the framebuffer
+    // scale, so that size is smaller than the screen the pointer lives on and
+    // the selection window no longer covers the monitor. Put the rect back in
+    // the same root pixels as X11 window geometry and the cursor.
+    let scale = monitor.scale_factor().unwrap_or(1.0);
+    let scale = if scale.is_finite() && scale > 0.0 {
+        f64::from(scale)
+    } else {
+        1.0
+    };
+    let x = monitor.x().map_err(|error| error.to_string())?;
+    let y = monitor.y().map_err(|error| error.to_string())?;
+    let width = monitor.width().map_err(|error| error.to_string())?;
+    let height = monitor.height().map_err(|error| error.to_string())?;
     Ok(Rect {
-        x: monitor.x().map_err(|error| error.to_string())?,
-        y: monitor.y().map_err(|error| error.to_string())?,
-        width: monitor.width().map_err(|error| error.to_string())? as i32,
-        height: monitor.height().map_err(|error| error.to_string())? as i32,
+        x: (f64::from(x) * scale).round() as i32,
+        y: (f64::from(y) * scale).round() as i32,
+        width: (f64::from(width) * scale).round() as i32,
+        height: (f64::from(height) * scale).round() as i32,
     })
 }
 
