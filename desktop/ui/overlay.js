@@ -9,6 +9,7 @@ const toastEl = document.getElementById('toast');
 const ACTION_BUTTON_WIDTH = 64;
 const CONTROL_PADDING = 4;
 const CONTROL_GAP = 2;
+const CONTROL_BAR_HEIGHT = 38;
 
 const DEFAULT_BUTTON_LABELS = {
   source: {
@@ -51,6 +52,29 @@ function normalizeViewportRect(rect) {
     y: toFiniteNumber(rect?.y),
     width: Math.max(0, Number(rect?.width) || 0),
     height: Math.max(0, Number(rect?.height) || 0)
+  };
+}
+
+function currentDpr() {
+  const dpr = Number(window.devicePixelRatio);
+  if (Number.isFinite(dpr) && dpr > 0) {
+    return dpr;
+  }
+  return 1;
+}
+
+function deviceToCss(value) {
+  return toFiniteNumber(value) / currentDpr();
+}
+
+function deviceRectToCss(rect) {
+  const normalized = normalizeViewportRect(rect);
+  const dpr = currentDpr();
+  return {
+    x: normalized.x / dpr,
+    y: normalized.y / dpr,
+    width: normalized.width / dpr,
+    height: normalized.height / dpr
   };
 }
 
@@ -124,7 +148,7 @@ function getOverlayMode(payload) {
 }
 
 function applySelectionViewport(payload) {
-  const rect = normalizeViewportRect(payload?.selectionRect || payload?.rect);
+  const rect = deviceRectToCss(payload?.selectionRect || payload?.rect);
   applyViewportRect(mask, rect);
   applyViewportRect(snapshotEl, rect);
   applyViewportRect(root, rect);
@@ -220,14 +244,21 @@ function applyControlViewport(payload) {
     return;
   }
 
-  const controlRect = normalizeViewportRect(rect);
+  const controlRect = deviceRectToCss(rect);
+  const side = payload?.controlSide || 'top';
+  let top = controlRect.y;
+  if (side === 'top') {
+    // The layout slot is a device-pixel gutter. Keep the real CSS bar height
+    // so HiDPI does not squash the buttons below their hit target.
+    top = controlRect.y + controlRect.height - CONTROL_BAR_HEIGHT;
+  }
   controlsEl.style.display = 'flex';
-  controlsEl.style.height = `${controlRect.height}px`;
+  controlsEl.style.height = `${CONTROL_BAR_HEIGHT}px`;
 
   const width = measureControlsWidth();
   controlsEl.style.width = `${width}px`;
   controlsEl.style.left = `${controlRect.x + controlRect.width - width}px`;
-  controlsEl.style.top = `${controlRect.y}px`;
+  controlsEl.style.top = `${Math.max(0, top)}px`;
   reportControlHitRect();
 }
 
@@ -246,7 +277,10 @@ function reportControlHitRect() {
     x: rect.left,
     y: rect.top,
     width: rect.width,
-    height: rect.height
+    height: rect.height,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    dpr: currentDpr()
   });
 }
 
@@ -336,17 +370,28 @@ function renderBlocks(payload) {
     const el = document.createElement('div');
     el.className = 'block';
     el.textContent = block.text;
+    const bbox = {
+      x: deviceToCss(block.bbox?.x),
+      y: deviceToCss(block.bbox?.y),
+      width: deviceToCss(block.bbox?.width),
+      height: deviceToCss(block.bbox?.height)
+    };
 
-    el.style.left = `${block.bbox.x}px`;
-    el.style.top = `${block.bbox.y}px`;
-    el.style.width = `${block.bbox.width}px`;
-    el.style.height = `${block.bbox.height}px`;
+    el.style.left = `${bbox.x}px`;
+    el.style.top = `${bbox.y}px`;
+    el.style.width = `${bbox.width}px`;
+    el.style.height = `${bbox.height}px`;
 
-    const hint = block.styleHint || {};
+    const hint = { ...(block.styleHint || {}) };
+    for (const key of ['baseFontSize', 'minFontSize', 'fontSize', 'padding', 'verticalOffset']) {
+      if (Number.isFinite(hint[key])) {
+        hint[key] = deviceToCss(hint[key]);
+      }
+    }
     applyTextBlockStyle(el, hint, textOnly);
 
     root.appendChild(el);
-    fitTextToBox(el, block.bbox, hint);
+    fitTextToBox(el, bbox, hint);
   }
 
   window.requestAnimationFrame(() => {

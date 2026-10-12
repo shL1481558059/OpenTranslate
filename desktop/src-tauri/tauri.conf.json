@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenTranslate",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "com.opentranslate.desktop",
   "build": {
     "frontendDist": "../ui",
@@ -51,17 +51,32 @@
     "linux": {
       "deb": {
         "files": {
-          "/usr/share/icons/hicolor/scalable/apps/opentranslate.svg": "icons/opentranslate.svg"
+          "/usr/share/icons/hicolor/scalable/apps/opentranslate.svg": "icons/opentranslate.svg",
+          "/usr/share/icons/hicolor/48x48@2/apps/opentranslate.png": "icons/96x96.png",
+          "/usr/share/icons/hicolor/64x64@2/apps/opentranslate.png": "icons/128x128.png",
+          "/usr/share/icons/hicolor/128x128@2/apps/opentranslate.png": "icons/256x256.png",
+          "/usr/share/icons/hicolor/256x256@2/apps/opentranslate.png": "icons/512x512.png",
+          "/usr/share/applications/opentranslate.desktop": "opentranslate.desktop"
         }
       },
       "rpm": {
         "files": {
-          "/usr/share/icons/hicolor/scalable/apps/opentranslate.svg": "icons/opentranslate.svg"
+          "/usr/share/icons/hicolor/scalable/apps/opentranslate.svg": "icons/opentranslate.svg",
+          "/usr/share/icons/hicolor/48x48@2/apps/opentranslate.png": "icons/96x96.png",
+          "/usr/share/icons/hicolor/64x64@2/apps/opentranslate.png": "icons/128x128.png",
+          "/usr/share/icons/hicolor/128x128@2/apps/opentranslate.png": "icons/256x256.png",
+          "/usr/share/icons/hicolor/256x256@2/apps/opentranslate.png": "icons/512x512.png",
+          "/usr/share/applications/opentranslate.desktop": "opentranslate.desktop"
         }
       },
       "appimage": {
         "files": {
-          "/usr/share/icons/hicolor/scalable/apps/opentranslate.svg": "icons/opentranslate.svg"
+          "/usr/share/icons/hicolor/scalable/apps/opentranslate.svg": "icons/opentranslate.svg",
+          "/usr/share/icons/hicolor/48x48@2/apps/opentranslate.png": "icons/96x96.png",
+          "/usr/share/icons/hicolor/64x64@2/apps/opentranslate.png": "icons/128x128.png",
+          "/usr/share/icons/hicolor/128x128@2/apps/opentranslate.png": "icons/256x256.png",
+          "/usr/share/icons/hicolor/256x256@2/apps/opentranslate.png": "icons/512x512.png",
+          "/usr/share/applications/opentranslate.desktop": "opentranslate.desktop"
         }
       }
     }

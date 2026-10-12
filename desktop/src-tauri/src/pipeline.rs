@@ -202,10 +202,9 @@ fn reveal_overlay(app: &AppHandle, host: Rect) {
         crate::pin_capture_window(&window, host);
         let _ = window.show();
         crate::pin_capture_window(&window, host);
-        let _ = window.set_ignore_cursor_events(true);
     }
     crate::set_overlay_visible(app, true);
-    crate::ensure_overlay_pointer(app);
+    crate::pass_through_overlay(app);
 }
 
 fn meaningful_ocr(text: &str) -> bool {
@@ -436,7 +435,10 @@ fn compensate_frame(app: &AppHandle, payload: &mut Value) {
     let Ok(inner) = window.inner_position() else {
         return;
     };
-    let scale = window.scale_factor().unwrap_or(1.0);
+    // Keep framebuffer pixels. overlay.js divides by devicePixelRatio, which
+    // can disagree with GTK's scale_factor (fractional scaling, Xft.dpi).
+    // Dividing here by scale_factor shifts the mask and shrinks the toolbar
+    // below the CSS button size, so the close control is drawn off the hit zone.
     let origin_x = payload
         .get("overlayBounds")
         .and_then(|value| value.get("x"))
@@ -460,7 +462,7 @@ fn compensate_frame(app: &AppHandle, payload: &mut Value) {
         let Some(relative) = rect_from_value(rect) else {
             continue;
         };
-        let (x, y, width, height) = viewport_rect(relative, host, inner.x, inner.y, scale);
+        let (x, y, width, height) = viewport_rect(relative, host, inner.x, inner.y);
         if let Some(object) = payload.get_mut(key).and_then(|value| value.as_object_mut()) {
             object.insert("x".into(), json!(x));
             object.insert("y".into(), json!(y));
@@ -468,7 +470,6 @@ fn compensate_frame(app: &AppHandle, payload: &mut Value) {
             object.insert("height".into(), json!(height));
         }
     }
-    scale_overlay_blocks(payload, scale);
 }
 
 fn rect_from_value(value: &Value) -> Option<Rect> {
@@ -480,67 +481,22 @@ fn rect_from_value(value: &Value) -> Option<Rect> {
     })
 }
 
-/// selectionRect is host-relative framebuffer pixels. The overlay webview is
-/// CSS pixels (framebuffer / scale) and may sit below a panel. Convert both.
+/// selectionRect is host-relative framebuffer pixels. Subtract the overlay
+/// window's device origin so the page can divide by its own devicePixelRatio.
 pub(crate) fn viewport_rect(
     host_relative: Rect,
     host: Rect,
     origin_x: i32,
     origin_y: i32,
-    scale: f64,
 ) -> (f64, f64, f64, f64) {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
     let screen_x = f64::from(host.x) + f64::from(host_relative.x);
     let screen_y = f64::from(host.y) + f64::from(host_relative.y);
     (
-        (screen_x - f64::from(origin_x)) / scale,
-        (screen_y - f64::from(origin_y)) / scale,
-        f64::from(host_relative.width) / scale,
-        f64::from(host_relative.height) / scale,
+        screen_x - f64::from(origin_x),
+        screen_y - f64::from(origin_y),
+        f64::from(host_relative.width),
+        f64::from(host_relative.height),
     )
-}
-
-fn scale_overlay_blocks(payload: &mut Value, scale: f64) {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
-    if (scale - 1.0).abs() < 0.01 {
-        return;
-    }
-    let Some(blocks) = payload.get_mut("blocks").and_then(|value| value.as_array_mut()) else {
-        return;
-    };
-    for block in blocks {
-        if let Some(bbox) = block.get_mut("bbox").and_then(|value| value.as_object_mut()) {
-            for key in ["x", "y", "width", "height"] {
-                if let Some(value) = bbox.get(key).and_then(|value| value.as_f64()) {
-                    bbox.insert(key.into(), json!(value / scale));
-                }
-            }
-        }
-        if let Some(hint) = block
-            .get_mut("styleHint")
-            .and_then(|value| value.as_object_mut())
-        {
-            for key in [
-                "baseFontSize",
-                "minFontSize",
-                "fontSize",
-                "padding",
-                "verticalOffset",
-            ] {
-                if let Some(value) = hint.get(key).and_then(|value| value.as_f64()) {
-                    hint.insert(key.into(), json!(value / scale));
-                }
-            }
-        }
-    }
 }
 
 fn remember_controls(app: &AppHandle, payload: &Value) {
@@ -589,12 +545,12 @@ mod tests {
             width: 1920,
             height: 1200,
         };
-        let (x, y, width, height) = viewport_rect(relative, host, 0, 29, 1.0);
+        let (x, y, width, height) = viewport_rect(relative, host, 0, 29);
         assert_eq!((x, y, width, height), (180.0, 191.0, 600.0, 400.0));
     }
 
     #[test]
-    fn overlay_viewport_divides_hidpi_framebuffer_pixels() {
+    fn overlay_viewport_keeps_hidpi_framebuffer_pixels() {
         let relative = Rect {
             x: 200,
             y: 240,
@@ -607,8 +563,8 @@ mod tests {
             width: 1920,
             height: 1200,
         };
-        let (x, y, width, height) = viewport_rect(relative, host, 0, 29, 2.0);
-        assert_eq!((x, y, width, height), (100.0, 105.5, 350.0, 230.0));
+        let (x, y, width, height) = viewport_rect(relative, host, 0, 29);
+        assert_eq!((x, y, width, height), (200.0, 211.0, 700.0, 460.0));
     }
 
     #[test]

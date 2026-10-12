@@ -126,6 +126,7 @@ pub struct CssRect {
     pub height: f64,
 }
 
+#[allow(dead_code)]
 pub fn css_to_screen(origin_x: i32, origin_y: i32, scale: f64, css: CssRect) -> Rect {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -140,6 +141,7 @@ pub fn css_to_screen(origin_x: i32, origin_y: i32, scale: f64, css: CssRect) -> 
     }
 }
 
+#[allow(dead_code)]
 pub fn hits_control(x: i32, y: i32, rect: Rect) -> bool {
     const PAD: i32 = 14;
     x >= rect.x.saturating_sub(PAD)

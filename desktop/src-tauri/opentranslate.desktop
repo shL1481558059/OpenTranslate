@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OpenTranslate
+Comment=Screenshot translation
+Exec=opentranslate
+Icon=opentranslate
+StartupWMClass=Opentranslate
+Categories=Utility;
+Terminal=false

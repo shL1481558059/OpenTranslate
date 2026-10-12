@@ -1,7 +1,7 @@
 {
   "name": "snap-translate-mac",
   "productName": "OpenTranslate",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Screenshot translate desktop app (Tauri) that calls an external translation API",
   "scripts": {

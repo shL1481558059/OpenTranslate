@@ -188,7 +188,7 @@ fn install_window_icon(app: &AppHandle) {
 #[cfg(target_os = "linux")]
 fn set_linux_icon_list(window: &tauri::WebviewWindow) {
     use gtk::gdk_pixbuf::prelude::PixbufLoaderExt;
-    use gtk::prelude::GtkWindowExt;
+    use gtk::prelude::{GtkWindowExt, IconThemeExt};
 
     let Ok(gtk_window) = window.gtk_window() else {
         eprintln!("[icon] gtk window unavailable");
@@ -217,8 +217,14 @@ fn set_linux_icon_list(window: &tauri::WebviewWindow) {
         return;
     }
     install_user_hicolor_icons();
+    if let Some(theme) = gtk::IconTheme::default() {
+        theme.rescan_if_needed();
+    }
     gtk_window.set_icon(Some(&icons[icons.len() - 1]));
     gtk_window.set_icon_list(&icons);
+    // Theme lookup (SVG / @2x) is what docks and status icons scale sharply.
+    // A single pixmap is what they upscale into a pixelated OT mark.
+    gtk_window.set_icon_name(Some("opentranslate"));
     publish_net_wm_icon(window);
 }
 
@@ -236,6 +242,21 @@ fn install_user_hicolor_icons() {
             include_bytes!("../icons/opentranslate.svg"),
         ),
         (
+            "16x16/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/16x16.png"),
+        ),
+        (
+            "24x24/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/24x24.png"),
+        ),
+        (
+            "32x32/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/32x32.png"),
+        ),
+        (
             "48x48/apps",
             "opentranslate.png",
             include_bytes!("../icons/48x48.png"),
@@ -244,6 +265,11 @@ fn install_user_hicolor_icons() {
             "64x64/apps",
             "opentranslate.png",
             include_bytes!("../icons/64x64.png"),
+        ),
+        (
+            "96x96/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/96x96.png"),
         ),
         (
             "128x128/apps",
@@ -260,6 +286,31 @@ fn install_user_hicolor_icons() {
             "opentranslate.png",
             include_bytes!("../icons/512x512.png"),
         ),
+        (
+            "24x24@2/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/48x48.png"),
+        ),
+        (
+            "48x48@2/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/96x96.png"),
+        ),
+        (
+            "64x64@2/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/128x128.png"),
+        ),
+        (
+            "128x128@2/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/256x256.png"),
+        ),
+        (
+            "256x256@2/apps",
+            "opentranslate.png",
+            include_bytes!("../icons/512x512.png"),
+        ),
     ];
     for (dir, name, bytes) in files {
         let path = base.join(dir).join(name);
@@ -271,6 +322,41 @@ fn install_user_hicolor_icons() {
         if std::fs::write(&path, bytes).is_err() {
             eprintln!("[icon] failed to install {}", path.display());
         }
+    }
+    install_user_desktop_file();
+    let status = std::process::Command::new("gtk-update-icon-cache")
+        .args(["-f", "-t", &base.to_string_lossy()])
+        .status();
+    if !matches!(status, Ok(code) if code.success()) {
+        eprintln!("[icon] gtk-update-icon-cache skipped");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn install_user_desktop_file() {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(home)
+        .join(".local/share/applications/opentranslate.desktop");
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let body = "\
+[Desktop Entry]
+Type=Application
+Name=OpenTranslate
+Comment=Screenshot translation
+Exec=opentranslate
+Icon=opentranslate
+StartupWMClass=Opentranslate
+Categories=Utility;
+Terminal=false
+";
+    if std::fs::write(&path, body).is_err() {
+        eprintln!("[icon] failed to install {}", path.display());
     }
 }
 
@@ -490,7 +576,7 @@ fn dismiss_overlay(app: &AppHandle) {
     set_overlay_control(app, None);
     if let Some(window) = app.get_webview_window("overlay") {
         let _ = window.hide();
-        let _ = window.set_ignore_cursor_events(true);
+        apply_overlay_input_shape(&window, None, 0.0);
     }
     close_selection(app);
 }
@@ -507,54 +593,59 @@ pub(crate) fn set_overlay_control(app: &AppHandle, rect: Option<CssRect>) {
     }
 }
 
-pub(crate) fn ensure_overlay_pointer(app: &AppHandle) {
-    static STARTED: AtomicBool = AtomicBool::new(false);
-    if STARTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
+pub(crate) fn pass_through_overlay(app: &AppHandle) {
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut ignoring = true;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-            let visible = app
-                .state::<AppState>()
-                .overlay_visible
-                .load(Ordering::SeqCst);
-            let hit = visible && pointer_over_controls(&app);
-            let next_ignore = !hit;
-            if next_ignore == ignoring {
-                continue;
-            }
-            ignoring = next_ignore;
-            let app = app.clone();
-            let _ = app.clone().run_on_main_thread(move || {
-                if let Some(window) = app.get_webview_window("overlay") {
-                    let _ = window.set_ignore_cursor_events(ignoring);
-                }
-            });
+    let _ = app.clone().run_on_main_thread(move || {
+        if let Some(window) = app.get_webview_window("overlay") {
+            apply_overlay_input_shape(&window, None, 0.0);
         }
     });
 }
 
-fn pointer_over_controls(app: &AppHandle) -> bool {
-    let Some((x, y)) = cursor::cursor_position() else {
-        return false;
-    };
-    let Some(window) = app.get_webview_window("overlay") else {
-        return false;
-    };
-    let Ok(origin) = window.inner_position() else {
-        return false;
-    };
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let state = app.state::<AppState>();
-    let Ok(guard) = state.overlay_control.lock() else {
-        return false;
-    };
-    guard.is_some_and(|css| {
-        capture::hits_control(x, y, capture::css_to_screen(origin.x, origin.y, scale, css))
-    })
+fn apply_overlay_input_shape(window: &WebviewWindow, css: Option<CssRect>, css_viewport_width: f64) {
+    #[cfg(target_os = "linux")]
+    {
+        use cairo::{RectangleInt, Region};
+        use gtk::prelude::WidgetExt;
+
+        let Ok(gtk_window) = window.gtk_window() else {
+            return;
+        };
+        let Some(gdk_window) = gtk_window.window() else {
+            return;
+        };
+        // GDK input shapes use the same logical pixels as gdk_window_get_width.
+        // At GDK_SCALE=2 that width is half the X11 window, and a logical
+        // rectangle covers twice as many device pixels. CSS pixels match this
+        // only when the webview viewport matches the GDK window.
+        let logical_width = f64::from(gdk_window.width().max(1));
+        let css_width = if css_viewport_width.is_finite() && css_viewport_width > 1.0 {
+            css_viewport_width
+        } else {
+            logical_width
+        };
+        let to_logical = logical_width / css_width;
+        let region = match css {
+            Some(rect) => {
+                let pad = 8.0;
+                let x = ((rect.x - pad) * to_logical).floor() as i32;
+                let y = ((rect.y - pad) * to_logical).floor() as i32;
+                let width = ((rect.width + pad * 2.0) * to_logical).ceil().max(1.0) as i32;
+                let height = ((rect.height + pad * 2.0) * to_logical).ceil().max(1.0) as i32;
+                eprintln!(
+                    "[overlay] input shape logical {x},{y} {width}x{height} from css {:.1},{:.1} {:.1}x{:.1} x{to_logical:.3}",
+                    rect.x, rect.y, rect.width, rect.height
+                );
+                Region::create_rectangle(&RectangleInt::new(x, y, width, height))
+            }
+            None => Region::create_rectangle(&RectangleInt::new(0, 0, 1, 1)),
+        };
+        gdk_window.input_shape_combine_region(&region, 0, 0);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, css, css_viewport_width);
+    }
 }
 
 fn close_selection(app: &AppHandle) {
@@ -783,11 +874,18 @@ fn overlay_close(app: AppHandle) {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HitRectInput {
     x: f64,
     y: f64,
     width: f64,
     height: f64,
+    #[serde(default)]
+    inner_width: f64,
+    #[serde(default)]
+    inner_height: f64,
+    #[serde(default)]
+    dpr: f64,
 }
 
 #[tauri::command]
@@ -801,15 +899,22 @@ fn overlay_set_hit_rect(app: AppHandle, rect: Option<HitRectInput>) {
         set_overlay_control(&app, None);
         return;
     }
-    set_overlay_control(
-        &app,
-        Some(CssRect {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-        }),
-    );
+    let css = CssRect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    };
+    set_overlay_control(&app, Some(css));
+    let viewport = rect.inner_width;
+    let _ = rect.inner_height;
+    let _ = rect.dpr;
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        if let Some(window) = app.get_webview_window("overlay") {
+            apply_overlay_input_shape(&window, Some(css), viewport);
+        }
+    });
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -817,9 +922,10 @@ fn overlay_set_ignore_mouse(app: AppHandle, should_ignore: Option<bool>) -> bool
     let Some(window) = app.get_webview_window("overlay") else {
         return false;
     };
-    window
-        .set_ignore_cursor_events(should_ignore.unwrap_or(true))
-        .is_ok()
+    if should_ignore.unwrap_or(true) {
+        apply_overlay_input_shape(&window, None, 0.0);
+    }
+    true
 }
 
 #[tauri::command]
