@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "opentranslate"
-version = "0.1.5"
+version = "0.1.6"
 description = "OpenTranslate desktop"
 edition = "2021"
 license = "MIT"

@@ -33,6 +33,8 @@ pub struct AppState {
     pub ready: Mutex<HashSet<String>>,
     pub selecting: AtomicBool,
     pub overlay_control: Mutex<Option<CssRect>>,
+    pub overlay_close: Mutex<Option<CssRect>>,
+    pub overlay_shape: Mutex<Option<(i32, i32, i32, i32)>>,
     pub overlay_visible: AtomicBool,
 }
 
@@ -69,6 +71,8 @@ pub fn run() {
             ready: Mutex::new(HashSet::new()),
             selecting: AtomicBool::new(false),
             overlay_control: Mutex::new(None),
+            overlay_close: Mutex::new(None),
+            overlay_shape: Mutex::new(None),
             overlay_visible: AtomicBool::new(false),
         })
         .setup(|app| {
@@ -574,9 +578,10 @@ fn emit_selection_windows(app: &AppHandle, host: Rect, windows: &[capture::SnapW
 fn dismiss_overlay(app: &AppHandle) {
     set_overlay_visible(app, false);
     set_overlay_control(app, None);
+    set_overlay_close(app, None);
     if let Some(window) = app.get_webview_window("overlay") {
         let _ = window.hide();
-        apply_overlay_input_shape(&window, None, 0.0);
+        apply_overlay_input_shape(&window, None, None, 0.0);
     }
     close_selection(app);
 }
@@ -597,16 +602,21 @@ pub(crate) fn pass_through_overlay(app: &AppHandle) {
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
         if let Some(window) = app.get_webview_window("overlay") {
-            apply_overlay_input_shape(&window, None, 0.0);
+            apply_overlay_input_shape(&window, None, None, 0.0);
         }
     });
 }
 
-fn apply_overlay_input_shape(window: &WebviewWindow, css: Option<CssRect>, css_viewport_width: f64) {
+fn apply_overlay_input_shape(
+    window: &WebviewWindow,
+    css: Option<CssRect>,
+    close: Option<CssRect>,
+    css_viewport_width: f64,
+) {
     #[cfg(target_os = "linux")]
     {
         use cairo::{RectangleInt, Region};
-        use gtk::prelude::WidgetExt;
+        use gtk::prelude::{Cast, WidgetExt};
 
         let Ok(gtk_window) = window.gtk_window() else {
             return;
@@ -614,6 +624,7 @@ fn apply_overlay_input_shape(window: &WebviewWindow, css: Option<CssRect>, css_v
         let Some(gdk_window) = gtk_window.window() else {
             return;
         };
+        wire_overlay_clicks(gtk_window.upcast_ref(), &window.app_handle());
         // GDK input shapes use the same logical pixels as gdk_window_get_width.
         // At GDK_SCALE=2 that width is half the X11 window, and a logical
         // rectangle covers twice as many device pixels. CSS pixels match this
@@ -625,26 +636,187 @@ fn apply_overlay_input_shape(window: &WebviewWindow, css: Option<CssRect>, css_v
             logical_width
         };
         let to_logical = logical_width / css_width;
+        let logical_close = close.map(|rect| CssRect {
+            x: rect.x * to_logical,
+            y: rect.y * to_logical,
+            width: rect.width * to_logical,
+            height: rect.height * to_logical,
+        });
+        set_overlay_close(&window.app_handle(), logical_close);
         let region = match css {
             Some(rect) => {
-                let pad = 8.0;
+                // Result mode adds 原文|译文 to the left of 关闭. Grow the hit
+                // region to that full toolbar on the first report so a later
+                // layout pass does not reshape under the pointer — GTK drops
+                // the click that lands in the same moment as an input-shape change.
+                let rect = toolbar_hit_target(rect);
+                let pad = 16.0;
                 let x = ((rect.x - pad) * to_logical).floor() as i32;
                 let y = ((rect.y - pad) * to_logical).floor() as i32;
                 let width = ((rect.width + pad * 2.0) * to_logical).ceil().max(1.0) as i32;
                 let height = ((rect.height + pad * 2.0) * to_logical).ceil().max(1.0) as i32;
+                let next = (x, y, width, height);
+                if overlay_shape_covers(&window.app_handle(), next) {
+                    return;
+                }
+                set_overlay_shape(&window.app_handle(), Some(next));
                 eprintln!(
                     "[overlay] input shape logical {x},{y} {width}x{height} from css {:.1},{:.1} {:.1}x{:.1} x{to_logical:.3}",
                     rect.x, rect.y, rect.width, rect.height
                 );
                 Region::create_rectangle(&RectangleInt::new(x, y, width, height))
             }
-            None => Region::create_rectangle(&RectangleInt::new(0, 0, 1, 1)),
+            None => {
+                set_overlay_shape(&window.app_handle(), None);
+                Region::create_rectangle(&RectangleInt::new(0, 0, 1, 1))
+            }
         };
-        gdk_window.input_shape_combine_region(&region, 0, 0);
+        // WebKit's child window does not inherit a toplevel input shape, so
+        // the right side of 关闭 can sit outside the region that receives the
+        // first button press. Paint the same region on every child.
+        paint_input_shape(&gdk_window, &region, 0, 0);
+        paint_widget_input_shape(gtk_window.upcast_ref(), &region, 0, 0);
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (window, css, css_viewport_width);
+        let _ = (window, css, close, css_viewport_width);
+    }
+}
+
+/// Result mode is 原文|译文|关闭. The status bar is only 关闭, pinned to the
+/// same right edge. Reserve the wider toolbar up front so the input shape
+/// already contains 关闭 when the two extra buttons appear.
+fn toolbar_hit_target(rect: CssRect) -> CssRect {
+    const MIN_WIDTH: f64 = 248.0;
+    const MIN_HEIGHT: f64 = 46.0;
+    let width = rect.width.max(MIN_WIDTH);
+    let height = rect.height.max(MIN_HEIGHT);
+    CssRect {
+        x: rect.x + rect.width - width,
+        y: rect.y + rect.height - height,
+        width,
+        height,
+    }
+}
+
+fn shape_already_covers(previous: (i32, i32, i32, i32), next: (i32, i32, i32, i32)) -> bool {
+    let (px, py, pw, ph) = previous;
+    let (nx, ny, nw, nh) = next;
+    let covers = nx >= px - 1
+        && ny >= py - 1
+        && nx + nw <= px + pw + 1
+        && ny + nh <= py + ph + 1;
+    let not_much_larger = pw <= nw + 80 && ph <= nh + 48;
+    covers && not_much_larger
+}
+
+fn overlay_shape_covers(app: &AppHandle, next: (i32, i32, i32, i32)) -> bool {
+    app.state::<AppState>()
+        .overlay_shape
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
+        .is_some_and(|previous| shape_already_covers(previous, next))
+}
+
+fn set_overlay_shape(app: &AppHandle, shape: Option<(i32, i32, i32, i32)>) {
+    if let Ok(mut guard) = app.state::<AppState>().overlay_shape.lock() {
+        *guard = shape;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn paint_input_shape(window: &gtk::gdk::Window, region: &cairo::Region, dx: i32, dy: i32) {
+    window.input_shape_combine_region(region, -dx, -dy);
+    for child in window.children() {
+        let (x, y) = child.position();
+        paint_input_shape(&child, region, dx + x, dy + y);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn paint_widget_input_shape(widget: &gtk::Widget, region: &cairo::Region, dx: i32, dy: i32) {
+    use gtk::prelude::{Cast, ContainerExt, WidgetExt};
+
+    let shifted = region.copy();
+    shifted.translate(-dx, -dy);
+    widget.input_shape_combine_region(Some(&shifted));
+    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+        for child in container.children() {
+            let alloc = child.allocation();
+            paint_widget_input_shape(&child, region, dx + alloc.x(), dy + alloc.y());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wire_overlay_clicks(widget: &gtk::Widget, app: &AppHandle) {
+    use gtk::glib::object::ObjectExt;
+    use gtk::prelude::{Cast, ContainerExt, WidgetExt, WidgetExtManual};
+
+    const KEY: &str = "ot-overlay-wired";
+    let already = unsafe { widget.data::<bool>(KEY).is_some() };
+    if !already {
+        unsafe { widget.set_data(KEY, true) };
+        // A focus-on-click window spends the first press moving focus and
+        // never delivers it to the button. The toolbar can take the press.
+        widget.set_focus_on_click(false);
+        widget.add_events(
+            gtk::gdk::EventMask::BUTTON_PRESS_MASK | gtk::gdk::EventMask::BUTTON_RELEASE_MASK,
+        );
+        let pressed = app.clone();
+        widget.connect_button_press_event(move |_widget, event| {
+            if event.button() != 1 || !close_button_pressed(&pressed, event) {
+                return gtk::glib::Propagation::Proceed;
+            }
+            dismiss_overlay(&pressed);
+            gtk::glib::Propagation::Stop
+        });
+        let released = app.clone();
+        widget.connect_button_release_event(move |_widget, event| {
+            if event.button() != 1 || !close_button_pressed(&released, event) {
+                return gtk::glib::Propagation::Proceed;
+            }
+            dismiss_overlay(&released);
+            gtk::glib::Propagation::Stop
+        });
+    }
+    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+        for child in container.children() {
+            wire_overlay_clicks(&child, app);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn close_button_pressed(app: &AppHandle, event: &gtk::gdk::EventButton) -> bool {
+    let Some(rect) = app
+        .state::<AppState>()
+        .overlay_close
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
+    else {
+        return false;
+    };
+    if rect.width < 1.0 || rect.height < 1.0 {
+        return false;
+    }
+    let Some(gdk_window) = event.window() else {
+        return false;
+    };
+    let top = gdk_window.toplevel();
+    let (_status, origin_x, origin_y) = top.origin();
+    let (root_x, root_y) = event.root();
+    let x = root_x - f64::from(origin_x);
+    let y = root_y - f64::from(origin_y);
+    const PAD: f64 = 12.0;
+    x >= rect.x - PAD && y >= rect.y - PAD && x < rect.x + rect.width + PAD && y < rect.y + rect.height + PAD
+}
+
+fn set_overlay_close(app: &AppHandle, rect: Option<CssRect>) {
+    if let Ok(mut guard) = app.state::<AppState>().overlay_close.lock() {
+        *guard = rect;
     }
 }
 
@@ -708,18 +880,28 @@ fn prepare_capture_window(window: &WebviewWindow) {
     // the monitor from its real origin, including the panel.
     #[cfg(target_os = "linux")]
     {
-        use gtk::prelude::{GtkWindowExt, WidgetExt};
+        use gtk::prelude::{Cast, GtkWindowExt, WidgetExt};
         let Ok(gtk_window) = window.gtk_window() else {
             return;
         };
         gtk_window.set_decorated(false);
         gtk_window.set_type_hint(gtk::gdk::WindowTypeHint::Splashscreen);
+        if window.label() == "overlay" {
+            // Keep keyboard focus available for Escape, but do not spend the
+            // first mouse press on focusing the override-redirect window.
+            gtk_window.set_focus_on_click(false);
+        }
         if let Some(gdk_window) = gtk_window.window() {
             gdk_window.set_override_redirect(true);
         }
-        gtk_window.connect_realize(|widget| {
+        let overlay_app = window.label() == "overlay";
+        let app = window.app_handle().clone();
+        gtk_window.connect_realize(move |widget| {
             if let Some(gdk_window) = widget.window() {
                 gdk_window.set_override_redirect(true);
+            }
+            if overlay_app {
+                wire_overlay_clicks(widget.upcast_ref(), &app);
             }
         });
     }
@@ -886,6 +1068,14 @@ struct HitRectInput {
     inner_height: f64,
     #[serde(default)]
     dpr: f64,
+    #[serde(default)]
+    close_x: f64,
+    #[serde(default)]
+    close_y: f64,
+    #[serde(default)]
+    close_width: f64,
+    #[serde(default)]
+    close_height: f64,
 }
 
 #[tauri::command]
@@ -906,13 +1096,28 @@ fn overlay_set_hit_rect(app: AppHandle, rect: Option<HitRectInput>) {
         height: rect.height,
     };
     set_overlay_control(&app, Some(css));
+    let close = if rect.close_width >= 1.0 && rect.close_height >= 1.0 {
+        CssRect {
+            x: rect.close_x,
+            y: rect.close_y,
+            width: rect.close_width,
+            height: rect.close_height,
+        }
+    } else {
+        CssRect {
+            x: css.x + (css.width - 72.0).max(0.0),
+            y: css.y,
+            width: 72.0_f64.min(css.width),
+            height: css.height,
+        }
+    };
     let viewport = rect.inner_width;
     let _ = rect.inner_height;
     let _ = rect.dpr;
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
         if let Some(window) = app.get_webview_window("overlay") {
-            apply_overlay_input_shape(&window, Some(css), viewport);
+            apply_overlay_input_shape(&window, Some(css), Some(close), viewport);
         }
     });
 }
@@ -923,7 +1128,7 @@ fn overlay_set_ignore_mouse(app: AppHandle, should_ignore: Option<bool>) -> bool
         return false;
     };
     if should_ignore.unwrap_or(true) {
-        apply_overlay_input_shape(&window, None, 0.0);
+        apply_overlay_input_shape(&window, None, None, 0.0);
     }
     true
 }
@@ -1186,6 +1391,36 @@ mod selection_tests {
                 height: 48
             })
         );
+    }
+
+    #[test]
+    fn toolbar_hit_grows_left_to_cover_result_buttons() {
+        let status = CssRect {
+            x: 1000.0,
+            y: 40.0,
+            width: 72.0,
+            height: 38.0,
+        };
+        let hit = toolbar_hit_target(status);
+        assert!(hit.width >= 248.0);
+        assert!((hit.x + hit.width - (status.x + status.width)).abs() < 0.1);
+        assert!(hit.x < status.x);
+        let result = CssRect {
+            x: hit.x + 10.0,
+            y: hit.y,
+            width: hit.width - 20.0,
+            height: hit.height,
+        };
+        let previous = (hit.x as i32, hit.y as i32, hit.width as i32, hit.height as i32);
+        let next = (
+            result.x as i32,
+            result.y as i32,
+            result.width as i32,
+            result.height as i32,
+        );
+        assert!(shape_already_covers(previous, next));
+        let moved = (next.0 + 400, next.1, next.2, next.3);
+        assert!(!shape_already_covers(previous, moved));
     }
 
     #[test]

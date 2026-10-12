@@ -1,5 +1,5 @@
 use super::{BBox, OcrBlock, OcrOutput};
-use image::{imageops::FilterType, RgbaImage};
+use image::{imageops::FilterType, Rgba, RgbaImage};
 use ndarray::Array4;
 use ort::session::Session;
 use ort::value::TensorRef;
@@ -111,7 +111,50 @@ pub fn recognize(image: &RgbaImage) -> Result<OcrOutput, String> {
     })
 }
 
+pub(crate) fn detection_padding(_width: u32, height: u32) -> (i32, i32) {
+    let height = height.max(1);
+    let pad_y = if height < 64 {
+        ((64 - height) / 2) as i32 + 8
+    } else {
+        8
+    };
+    (8, pad_y)
+}
+
+fn border_color(image: &RgbaImage) -> Rgba<u8> {
+    let sample = image.get_pixel(0, 0);
+    Rgba([sample[0], sample[1], sample[2], 255])
+}
+
+fn expand_for_detection(image: &RgbaImage) -> (RgbaImage, i32, i32) {
+    let (pad_x, pad_y) = detection_padding(image.width(), image.height());
+    if pad_x <= 0 && pad_y <= 0 {
+        return (image.clone(), 0, 0);
+    }
+    let width = image.width().saturating_add(pad_x as u32 * 2);
+    let height = image.height().saturating_add(pad_y as u32 * 2);
+    let mut canvas = RgbaImage::from_pixel(width.max(1), height.max(1), border_color(image));
+    image::imageops::overlay(&mut canvas, image, i64::from(pad_x), i64::from(pad_y));
+    (canvas, pad_x, pad_y)
+}
+
 fn detect(engine: &mut Engine, image: &RgbaImage) -> Result<Vec<BBox>, String> {
+    let (padded, pad_x, pad_y) = expand_for_detection(image);
+    let mut boxes = detect_padded(engine, &padded)?;
+    for bbox in &mut boxes {
+        bbox.x -= pad_x;
+        bbox.y -= pad_y;
+        let right = bbox.x + bbox.width;
+        let bottom = bbox.y + bbox.height;
+        bbox.x = bbox.x.clamp(0, image.width() as i32 - 1);
+        bbox.y = bbox.y.clamp(0, image.height() as i32 - 1);
+        bbox.width = (right - bbox.x).clamp(1, image.width() as i32 - bbox.x);
+        bbox.height = (bottom - bbox.y).clamp(1, image.height() as i32 - bbox.y);
+    }
+    Ok(boxes)
+}
+
+fn detect_padded(engine: &mut Engine, image: &RgbaImage) -> Result<Vec<BBox>, String> {
     let (input, scale_x, scale_y, width, height) = det_input(image);
     let outputs = engine
         .det
@@ -307,6 +350,105 @@ fn merge_line_boxes(mut boxes: Vec<BBox>) -> Vec<BBox> {
     merged
 }
 
+fn column_ink(image: &RgbaImage, x: u32) -> f32 {
+    let mut dark = 0u32;
+    let height = image.height().max(1);
+    for y in 0..height {
+        let pixel = image.get_pixel(x, y);
+        let luminance =
+            0.2126 * f32::from(pixel[0]) + 0.7152 * f32::from(pixel[1]) + 0.0722 * f32::from(pixel[2]);
+        if luminance < 185.0 {
+            dark += 1;
+        }
+    }
+    dark as f32 / height as f32
+}
+
+fn quiet_run(image: &RgbaImage, x: u32) -> (u32, u32) {
+    let mut start = x;
+    while start > 0 && column_ink(image, start - 1) < 0.08 {
+        start -= 1;
+    }
+    let mut end = x + 1;
+    let width = image.width();
+    while end < width && column_ink(image, end) < 0.08 {
+        end += 1;
+    }
+    (start, end.saturating_sub(start))
+}
+
+fn slice_ranges(image: &RgbaImage) -> Vec<(u32, u32, bool)> {
+    let width = image.width().max(1);
+    let height = image.height().max(1);
+    let natural = (REC_HEIGHT as f32) * (width as f32 / height as f32);
+    if natural <= 640.0 {
+        return vec![(0, width, false)];
+    }
+    let slice_w = ((640.0 * height as f32) / REC_HEIGHT as f32)
+        .floor()
+        .max(8.0) as u32;
+    // A letter gap is a couple of white columns. A word space is much wider.
+    // Splitting on the first quiet column inserts a space in the middle of a word.
+    // Letter gaps grow with the font, but a word space is closer to a quarter
+    // of the line height. Anything narrower is still a fine place to slice,
+    // without inventing a space in the middle of a word.
+    let word_gap = (height / 4).max(8);
+    let mut slices = Vec::new();
+    let mut start = 0u32;
+    while start < width {
+        let limit = start.saturating_add(slice_w).min(width);
+        if limit >= width {
+            slices.push((start, width - start, false));
+            break;
+        }
+        let search_from = start + slice_w * 2 / 3;
+        let mut best_x = limit;
+        let mut best_run = 0u32;
+        let mut x = search_from;
+        while x < limit {
+            if column_ink(image, x) < 0.08 {
+                let (run_start, run_width) = quiet_run(image, x);
+                if run_width > best_run {
+                    best_run = run_width;
+                    best_x = run_start.clamp(search_from, limit);
+                }
+                x = run_start.saturating_add(run_width).max(x + 1);
+            } else {
+                x += 1;
+            }
+        }
+        let on_gap = best_run >= word_gap && best_x > start;
+        let end = if best_run >= 2 && best_x > start {
+            best_x
+        } else {
+            limit
+        };
+        let end = end.clamp(start.saturating_add(8), width);
+        slices.push((start, end - start, on_gap));
+        if end >= width {
+            break;
+        }
+        start = end;
+    }
+    slices
+}
+
+fn join_slices(parts: &[(String, bool)]) -> String {
+    let mut text = String::new();
+    for (index, (part, gap_before)) in parts.iter().enumerate() {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if !text.is_empty() && *gap_before && index > 0 && !text.ends_with(' ') && !part.starts_with(' ')
+        {
+            text.push(' ');
+        }
+        text.push_str(part);
+    }
+    text
+}
+
 fn recognize_box(
     engine: &mut Engine,
     image: &RgbaImage,
@@ -317,11 +459,41 @@ fn recognize_box(
     let width = (bbox.width as u32).clamp(1, image.width().saturating_sub(x));
     let height = (bbox.height as u32).clamp(1, image.height().saturating_sub(y));
     let crop = image::imageops::crop_imm(image, x, y, width, height).to_image();
+    let slices = slice_ranges(&crop);
+    if slices.len() <= 1 {
+        return recognize_strip(engine, &crop);
+    }
+    let mut parts = Vec::new();
+    let mut confidence_sum = 0f32;
+    let mut confidence_count = 0u32;
+    let mut gap_before = false;
+    for (start, slice_width, gap_after) in slices {
+        let piece =
+            image::imageops::crop_imm(&crop, start, 0, slice_width.max(1), crop.height()).to_image();
+        let (text, confidence) = recognize_strip(engine, &piece)?;
+        if text.trim().is_empty() {
+            gap_before = gap_before || gap_after;
+            continue;
+        }
+        confidence_sum += confidence;
+        confidence_count += 1;
+        parts.push((text, gap_before));
+        gap_before = gap_after;
+    }
+    let confidence = if confidence_count == 0 {
+        0.0
+    } else {
+        confidence_sum / confidence_count as f32
+    };
+    Ok((join_slices(&parts), confidence))
+}
+
+fn recognize_strip(engine: &mut Engine, crop: &RgbaImage) -> Result<(String, f32), String> {
     let target_width = ((REC_HEIGHT as f32) * (crop.width() as f32 / crop.height().max(1) as f32))
         .round()
         .clamp(8.0, 640.0) as u32;
     let target_width = target_width.max(8);
-    let resized = image::imageops::resize(&crop, target_width, REC_HEIGHT, FilterType::Triangle);
+    let resized = image::imageops::resize(crop, target_width, REC_HEIGHT, FilterType::Triangle);
     let mut data = vec![0f32; (3 * target_width * REC_HEIGHT) as usize];
     let plane = (target_width * REC_HEIGHT) as usize;
     for py in 0..REC_HEIGHT {
@@ -432,6 +604,37 @@ mod tests {
     use image::{Rgba, RgbaImage};
 
     #[test]
+    fn short_images_get_vertical_detection_padding() {
+        let (pad_x, pad_y) = detection_padding(1200, 47);
+        assert_eq!(pad_x, 8);
+        assert!(pad_y >= 16);
+        let (wide_x, wide_y) = detection_padding(800, 100);
+        assert_eq!((wide_x, wide_y), (8, 8));
+    }
+
+    #[test]
+    fn long_lines_are_sliced_instead_of_squashed() {
+        let image = RgbaImage::from_pixel(1400, 36, Rgba([255, 255, 255, 255]));
+        let slices = slice_ranges(&image);
+        assert!(slices.len() >= 2, "{slices:?}");
+        let covered: u32 = slices.iter().map(|(_, width, _)| *width).sum();
+        assert_eq!(covered, 1400);
+        assert_eq!(slices[0].0, 0);
+    }
+
+    #[test]
+    fn slice_join_keeps_a_space_on_a_gap() {
+        let text = join_slices(&[
+            ("OpenTranslate screenshot translation test.".into(), false),
+            ("Hello world from the desktop.".into(), true),
+        ]);
+        assert_eq!(
+            text,
+            "OpenTranslate screenshot translation test. Hello world from the desktop."
+        );
+    }
+
+    #[test]
     fn blank_crops_are_not_text() {
         let mut loaded = engine().expect("engine");
         for (width, height, color) in [
@@ -452,6 +655,39 @@ mod tests {
             assert!(
                 text.trim().is_empty() || confidence < REC_MIN_CONFIDENCE,
                 "{width}x{height} {confidence} {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn short_and_long_lines_keep_the_tail() {
+        for (bytes, label) in [
+            (include_bytes!("../fixtures/line-47.png").as_slice(), "47"),
+            (include_bytes!("../fixtures/line-36.png").as_slice(), "36"),
+            (include_bytes!("../fixtures/line-100.png").as_slice(), "100"),
+        ] {
+            let image = image::load_from_memory(bytes)
+                .unwrap_or_else(|error| panic!("{label} decode: {error}"))
+                .to_rgba8();
+            let output = recognize(&image).unwrap_or_else(|error| panic!("{label} ocr: {error}"));
+            let text = output
+                .blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                output.blocks.len() >= 1,
+                "{label} {}x{} produced no blocks",
+                image.width(),
+                image.height()
+            );
+            let lower = text.to_lowercase();
+            assert!(
+                lower.contains("hello world") && lower.contains("desktop"),
+                "{label} {}x{} text={text:?}",
+                image.width(),
+                image.height()
             );
         }
     }

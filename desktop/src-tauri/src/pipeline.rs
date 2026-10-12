@@ -25,8 +25,8 @@ pub async fn run(app: AppHandle, rect: Rect) {
     crate::set_overlay_visible(&app, false);
     tokio::time::sleep(CAPTURE_DELAY).await;
 
-    let captured = match capture::capture_rect(rect) {
-        Ok(image) => image.0,
+    let frame = match capture::capture_frame(rect) {
+        Ok(frame) => frame,
         Err(error) => {
             reveal_overlay(&app, host);
             emit_status(
@@ -40,7 +40,9 @@ pub async fn run(app: AppHandle, rect: Rect) {
             return;
         }
     };
-    let image = captured;
+    let grab = capture::ocr_grab(rect, frame.bounds);
+    let image = capture::crop_frame(&frame, grab.rect);
+    let snapshot = capture::crop_frame(&frame, rect);
     reveal_overlay(&app, host);
     wait_ready(&app, "overlay").await;
     emit_status(&app, rect, host, "翻译中…", 0.35, "#ffffff");
@@ -110,15 +112,20 @@ pub async fn run(app: AppHandle, rect: Rect) {
         .cloned()
         .collect::<Vec<_>>();
     if kept.is_empty() {
-        emit_status(&app, rect, host, "未识别到文字", 0.88, "#ffffff");
+        let message = if rect.height < 64 {
+            "未识别到文字。选区偏矮，请把框拉高一些再试。"
+        } else {
+            "未识别到文字"
+        };
+        emit_status(&app, rect, host, message, 0.88, "#ffffff");
         return;
     }
 
-    let scale_x = recognized.image_width as f64 / rect.width.max(1) as f64;
-    let scale_y = recognized.image_height as f64 / rect.height.max(1) as f64;
+    let scale_x = frame.scale_x;
+    let scale_y = frame.scale_y;
     let scaled = kept
         .iter()
-        .map(|block| scale_block(block, scale_x, scale_y))
+        .map(|block| scale_block(block, scale_x, scale_y, grab.pad_x, grab.pad_y))
         .collect::<Vec<_>>();
     let settings = current_settings(&app);
     let texts = scaled
@@ -185,8 +192,8 @@ pub async fn run(app: AppHandle, rect: Rect) {
         laid_out["maskOpacity"] = json!(0.35);
         laid_out["hasText"] = json!(true);
     } else {
-        apply_sampled_colors(&mut laid_out, &image, &scaled, scale_x, scale_y);
-        laid_out["snapshotDataUrl"] = json!(png_data_url(&image));
+        apply_sampled_colors(&mut laid_out, &snapshot, &scaled, scale_x, scale_y);
+        laid_out["snapshotDataUrl"] = json!(png_data_url(&snapshot));
         laid_out["mask"] = json!(true);
         laid_out["textOnly"] = json!(true);
         laid_out["maskOpacity"] = json!(0.18);
@@ -261,16 +268,25 @@ fn current_settings(app: &AppHandle) -> Settings {
         .unwrap_or_else(|error| error.into_inner().clone())
 }
 
-fn scale_block(block: &OcrBlock, scale_x: f64, scale_y: f64) -> Value {
+fn scale_axis(value: i32, scale: f64) -> f64 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    f64::from(value) / scale
+}
+
+fn scale_block(block: &OcrBlock, scale_x: f64, scale_y: f64, pad_x: i32, pad_y: i32) -> Value {
     json!({
         "id": block.id,
         "text": block.text,
         "lines": block.lines,
         "bbox": {
-            "x": (block.bbox.x as f64 / scale_x).round() as i32,
-            "y": (block.bbox.y as f64 / scale_y).round() as i32,
-            "width": (block.bbox.width as f64 / scale_x).round().max(1.0) as i32,
-            "height": (block.bbox.height as f64 / scale_y).round().max(1.0) as i32
+            "x": (scale_axis(block.bbox.x, scale_x) - f64::from(pad_x)).round() as i32,
+            "y": (scale_axis(block.bbox.y, scale_y) - f64::from(pad_y)).round() as i32,
+            "width": scale_axis(block.bbox.width, scale_x).round().max(1.0) as i32,
+            "height": scale_axis(block.bbox.height, scale_y).round().max(1.0) as i32
         }
     })
 }
@@ -528,7 +544,36 @@ fn remember_controls(app: &AppHandle, payload: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{meaningful_ocr, viewport_rect};
+    use super::{meaningful_ocr, scale_axis, scale_block, viewport_rect};
+    use ocr_engine::OcrBlock;
+
+    #[test]
+    fn padded_ocr_box_maps_back_onto_the_selection() {
+        let block = OcrBlock {
+            id: "b1".into(),
+            text: "Hello world".into(),
+            lines: vec!["Hello world".into()],
+            bbox: ocr_engine::BBox {
+                x: 18,
+                y: 16,
+                width: 200,
+                height: 28,
+            },
+        };
+        let mapped = scale_block(&block, 1.0, 1.0, 8, 12);
+        let bbox = mapped.get("bbox").unwrap();
+        assert_eq!(bbox.get("x").and_then(|value| value.as_i64()), Some(10));
+        assert_eq!(bbox.get("y").and_then(|value| value.as_i64()), Some(4));
+        assert_eq!(bbox.get("width").and_then(|value| value.as_i64()), Some(200));
+    }
+
+    #[test]
+    fn shrunk_framebuffer_is_not_how_a_crop_is_mapped() {
+        // A 1065px selection must stay 1065px when the capture scale is 1.
+        // The 1920-vs-1280 bug used to scale that crop by 1280/1920.
+        assert_eq!(scale_axis(1065, 1.0).round() as i32, 1065);
+        assert_eq!(scale_axis(47, 1.0).round() as i32, 47);
+    }
     use crate::capture::Rect;
 
     #[test]

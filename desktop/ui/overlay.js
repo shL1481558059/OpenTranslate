@@ -255,11 +255,41 @@ function applyControlViewport(payload) {
   controlsEl.style.display = 'flex';
   controlsEl.style.height = `${CONTROL_BAR_HEIGHT}px`;
 
-  const width = measureControlsWidth();
+  controlsEl.style.width = 'max-content';
+  const width = Math.max(measureControlsWidth(), Math.ceil(controlsEl.getBoundingClientRect().width || 0));
   controlsEl.style.width = `${width}px`;
   controlsEl.style.left = `${controlRect.x + controlRect.width - width}px`;
   controlsEl.style.top = `${Math.max(0, top)}px`;
   reportControlHitRect();
+}
+
+function unionRect(nodes) {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const node of nodes) {
+    if (!node || node.hidden) {
+      continue;
+    }
+    const rect = node.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) {
+      continue;
+    }
+    left = Math.min(left, rect.left);
+    top = Math.min(top, rect.top);
+    right = Math.max(right, rect.right);
+    bottom = Math.max(bottom, rect.bottom);
+  }
+  if (!Number.isFinite(left) || right - left < 1 || bottom - top < 1) {
+    return null;
+  }
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top
+  };
 }
 
 function reportControlHitRect() {
@@ -269,15 +299,20 @@ function reportControlHitRect() {
   if (controlsEl.style.display === 'none') {
     return;
   }
-  const rect = controlsEl.getBoundingClientRect();
-  if (rect.width < 1 || rect.height < 1) {
+  const rect = unionRect([controlsEl, ...getVisibleControlButtons()]) || controlsEl.getBoundingClientRect();
+  const closeRect = closeBtn?.getBoundingClientRect?.();
+  if (!rect || rect.width < 1 || rect.height < 1) {
     return;
   }
   window.snapTranslate.setOverlayHitRect({
-    x: rect.left,
-    y: rect.top,
+    x: rect.x ?? rect.left,
+    y: rect.y ?? rect.top,
     width: rect.width,
     height: rect.height,
+    closeX: closeRect?.left || 0,
+    closeY: closeRect?.top || 0,
+    closeWidth: closeBtn && !closeBtn.hidden ? closeRect?.width || 0 : 0,
+    closeHeight: closeBtn && !closeBtn.hidden ? closeRect?.height || 0 : 0,
     innerWidth: window.innerWidth,
     innerHeight: window.innerHeight,
     dpr: currentDpr()
@@ -516,14 +551,41 @@ function bindPress(button, action) {
   if (!button) {
     return;
   }
-  button.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0 || button.disabled || button.hidden) {
+  let lastAt = 0;
+  const run = (event) => {
+    if ((event.button !== undefined && event.button !== 0) || button.disabled || button.hidden) {
       return;
     }
+    const now = performance.now();
+    if (now - lastAt < 350) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    lastAt = now;
     event.preventDefault();
     event.stopPropagation();
     action();
+  };
+  // WebKitGTK often delivers the first press as a click or mousedown and
+  // swallows pointerdown on an unfocused overlay. Any one of these closes.
+  button.addEventListener('pointerdown', run);
+  button.addEventListener('mousedown', run);
+  button.addEventListener('pointerup', run);
+  button.addEventListener('mouseup', run);
+  button.addEventListener('click', run);
+}
+
+if (window.ResizeObserver && controlsEl) {
+  const hitObserver = new ResizeObserver(() => {
+    reportControlHitRect();
   });
+  hitObserver.observe(controlsEl);
+  for (const button of [extractSourceBtn, extractTranslatedBtn, closeBtn]) {
+    if (button) {
+      hitObserver.observe(button);
+    }
+  }
 }
 
 bindPress(closeBtn, () => window.snapTranslate.closeOverlay());
