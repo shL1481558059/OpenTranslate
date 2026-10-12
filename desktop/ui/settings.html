@@ -6,8 +6,8 @@
     <title>设置</title>
     <script src="./theme-bootstrap.js?v=2"></script>
     <script src="./tauri-bridge.js"></script>
-    <link rel="stylesheet" href="./theme.css?v=9" />
-    <link rel="stylesheet" href="./settings.css?v=10" />
+    <link rel="stylesheet" href="./theme.css?v=10" />
+    <link rel="stylesheet" href="./settings.css?v=11" />
   </head>
   <body class="page-settings-body">
     <div class="window-drag-region" aria-hidden="true"></div>
@@ -15,7 +15,7 @@
       <section class="shell">
         <header class="topbar">
           <div class="brand">
-            <span class="mark" aria-hidden="true"></span>
+            <img class="mark" src="./brand-mark.png" alt="" width="32" height="32" />
             <div>
               <p class="kicker">OpenTranslate</p>
               <h1>设置</h1>
@@ -27,6 +27,7 @@
           </div>
         </header>
 
+        <div class="settings-scroll">
         <p id="status" class="note" hidden></p>
         <p class="lede">翻译只走外部接口。选择 DeepL、DeepLX 或 OpenAI 兼容服务。</p>
 
@@ -136,6 +137,7 @@
             </div>
           </section>
         </form>
+        </div>
       </section>
     </main>
     <script type="module" src="./settings.js?v=7"></script>

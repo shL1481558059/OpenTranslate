@@ -78,6 +78,7 @@ pub fn run() {
             if let Ok(mut guard) = app.state::<AppState>().settings.lock() {
                 *guard = loaded;
             }
+            install_window_icon(app.handle());
             if let Err(error) = install_tray(app.handle()) {
                 eprintln!("[tray] {error}");
             }
@@ -162,8 +163,145 @@ fn settings_path(app: &AppHandle) -> std::path::PathBuf {
         .unwrap_or_else(|_| settings_path_early())
 }
 
+fn tray_icon_bytes() -> &'static [u8] {
+    #[cfg(target_os = "macos")]
+    {
+        include_bytes!("../../assets/tray-template-36.png")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        include_bytes!("../../assets/tray-icon-64.png")
+    }
+}
+
+fn install_window_icon(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../icons/256x256.png")) {
+        let _ = window.set_icon(icon);
+    }
+    #[cfg(target_os = "linux")]
+    set_linux_icon_list(&window);
+}
+
+#[cfg(target_os = "linux")]
+fn set_linux_icon_list(window: &tauri::WebviewWindow) {
+    use gtk::gdk_pixbuf::prelude::PixbufLoaderExt;
+    use gtk::prelude::GtkWindowExt;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        eprintln!("[icon] gtk window unavailable");
+        return;
+    };
+    let mut icons = Vec::new();
+    for bytes in [
+        include_bytes!("../icons/16x16.png").as_slice(),
+        include_bytes!("../icons/24x24.png").as_slice(),
+        include_bytes!("../icons/32x32.png").as_slice(),
+        include_bytes!("../icons/48x48.png").as_slice(),
+        include_bytes!("../icons/64x64.png").as_slice(),
+        include_bytes!("../icons/96x96.png").as_slice(),
+        include_bytes!("../icons/128x128.png").as_slice(),
+        include_bytes!("../icons/256x256.png").as_slice(),
+    ] {
+        let loader = gtk::gdk_pixbuf::PixbufLoader::new();
+        if loader.write(bytes).is_err() || loader.close().is_err() {
+            continue;
+        }
+        if let Some(pixbuf) = loader.pixbuf() {
+            icons.push(pixbuf);
+        }
+    }
+    if icons.is_empty() {
+        return;
+    }
+    gtk_window.set_icon(Some(&icons[icons.len() - 1]));
+    gtk_window.set_icon_list(&icons);
+    publish_net_wm_icon(window);
+}
+
+#[cfg(target_os = "linux")]
+fn publish_net_wm_icon(window: &tauri::WebviewWindow) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::os::raw::{c_int, c_long, c_uchar, c_ulong, c_void};
+
+    #[link(name = "X11")]
+    extern "C" {
+        fn XOpenDisplay(name: *const i8) -> *mut c_void;
+        fn XCloseDisplay(display: *mut c_void) -> c_int;
+        fn XInternAtom(display: *mut c_void, name: *const i8, only_if_exists: c_int) -> c_ulong;
+        fn XChangeProperty(
+            display: *mut c_void,
+            window: c_ulong,
+            property: c_ulong,
+            type_: c_ulong,
+            format: c_int,
+            mode: c_int,
+            data: *const c_uchar,
+            nelements: c_int,
+        ) -> c_int;
+        fn XFlush(display: *mut c_void) -> c_int;
+        fn XSync(display: *mut c_void, discard: c_int) -> c_int;
+    }
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let xid = match handle.as_raw() {
+        RawWindowHandle::Xlib(handle) => handle.window as c_ulong,
+        RawWindowHandle::Xcb(handle) => c_ulong::from(handle.window.get()),
+        _ => return,
+    };
+    let mut data: Vec<c_long> = Vec::new();
+    for bytes in [
+        include_bytes!("../icons/32x32.png").as_slice(),
+        include_bytes!("../icons/48x48.png").as_slice(),
+        include_bytes!("../icons/64x64.png").as_slice(),
+        include_bytes!("../icons/128x128.png").as_slice(),
+    ] {
+        let Ok(image) = image::load_from_memory(bytes) else {
+            continue;
+        };
+        let image = image.to_rgba8();
+        data.push(c_long::from(image.width() as i32));
+        data.push(c_long::from(image.height() as i32));
+        for pixel in image.pixels() {
+            let argb = (u32::from(pixel[3]) << 24)
+                | (u32::from(pixel[0]) << 16)
+                | (u32::from(pixel[1]) << 8)
+                | u32::from(pixel[2]);
+            data.push(argb as c_long);
+        }
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        unsafe {
+            let display = XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return;
+            }
+            let property = XInternAtom(display, b"_NET_WM_ICON\0".as_ptr().cast(), 0);
+            let kind = XInternAtom(display, b"CARDINAL\0".as_ptr().cast(), 0);
+            XChangeProperty(
+                display,
+                xid,
+                property,
+                kind,
+                32,
+                0,
+                data.as_ptr().cast(),
+                data.len() as c_int,
+            );
+            XSync(display, 0);
+            XFlush(display);
+            XCloseDisplay(display);
+        }
+    });
+}
+
 fn install_tray(app: &AppHandle) -> Result<(), String> {
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../../assets/tray-template-18.png"))
+    let icon = tauri::image::Image::from_bytes(tray_icon_bytes())
         .map_err(|error| error.to_string())?;
     let translate = MenuItem::with_id(app, "translate", "打开翻译", true, None::<&str>)
         .map_err(|error| error.to_string())?;

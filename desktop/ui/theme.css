@@ -227,12 +227,13 @@ a {
 }
 
 .mark {
-  width: 20px;
-  height: 20px;
-  border-radius: var(--radius-sm);
-  background: var(--accent);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   flex: 0 0 auto;
-  box-shadow: var(--shadow);
+  display: block;
+  object-fit: cover;
+  background: transparent;
 }
 
 .kicker {
@@ -561,7 +562,7 @@ textarea {
   background: var(--faint);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 640px) {
   .app {
     padding-left: 18px;
     padding-right: 18px;

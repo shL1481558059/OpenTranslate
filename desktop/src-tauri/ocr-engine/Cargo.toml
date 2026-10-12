@@ -1,6 +1,6 @@
 [package]
 name = "ocr-engine"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Cross-platform screenshot OCR for OpenTranslate"
 license = "MIT"

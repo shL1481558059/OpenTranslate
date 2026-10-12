@@ -3285,7 +3285,7 @@ dependencies = [
 
 [[package]]
 name = "ocr-engine"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "image",
  "ndarray",
@@ -3357,14 +3357,16 @@ dependencies = [
 
 [[package]]
 name = "opentranslate"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arboard",
  "axum",
  "base64 0.22.1",
+ "gtk",
  "image",
  "keyring",
  "ocr-engine",
+ "raw-window-handle",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

@@ -4,32 +4,45 @@ body.page-settings-body {
 }
 
 .page-settings.app {
-  display: block;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   min-height: 0;
   max-width: none;
-  padding: calc(14px + var(--titlebar-offset)) 0 48px;
-  overflow-x: hidden;
-  overflow-y: auto;
+  padding: calc(14px + var(--titlebar-offset)) 0 0;
+  overflow: hidden;
 }
 
 .page-settings .shell {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   max-width: 680px;
   margin: 0 auto;
   padding: 0 32px;
-  gap: 22px;
+  gap: 0;
 }
 
 .page-settings .topbar {
   position: sticky;
   top: 0;
   z-index: 5;
+  flex: 0 0 auto;
   padding: 4px 0 16px;
-  background: linear-gradient(var(--bg) 82%, transparent);
+  background: var(--bg);
+}
+
+.page-settings .settings-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-top: 16px;
+  padding-bottom: 48px;
 }
 
 .page-settings .lede {
-  margin-top: -4px;
+  margin: 0 0 4px;
 }
 
 .page-settings form {
@@ -81,7 +94,7 @@ body.page-settings-body {
   gap: 10px;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 640px) {
   .page-settings .shell {
     padding: 0 18px;
   }

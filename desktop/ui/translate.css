@@ -1,3 +1,7 @@
+.page-translate.app {
+  max-width: none;
+}
+
 .page-translate .shell {
   flex: 1 0 auto;
   min-height: 100%;
@@ -71,7 +75,7 @@
   background: var(--surface-subtle);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 640px) {
   .page-translate .editors {
     grid-template-columns: 1fr;
   }
