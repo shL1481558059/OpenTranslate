@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { isClick, dragRect, clampRect } = require('../desktop/ui/selection-geometry');
+const { isClick, dragRect, clampRect, pointerScale } = require('../desktop/ui/selection-geometry');
 
 test('a four-line drag keeps its height when the webview sits below the monitor', () => {
   const start = { x: 80, y: 140 };
@@ -35,6 +35,16 @@ test('hidpi drag maps css pixels through the webview scale', () => {
 test('movement under six pixels is a click and six pixels is a drag', () => {
   assert.equal(isClick({ x: 10, y: 10 }, { x: 15, y: 14 }), true);
   assert.equal(isClick({ x: 10, y: 10 }, { x: 16, y: 10 }), false);
+});
+
+test('the window pixel ratio wins when devicePixelRatio disagrees', () => {
+  assert.equal(pointerScale(1920, 1920, 2, 1), 1);
+  assert.equal(pointerScale(1920, 960, 2, 1), 2);
+  assert.ok(Math.abs(pointerScale(1920, 1293, 1, 1) - 1920 / 1293) < 1e-9);
+  assert.equal(pointerScale(0, 960, 2, 1), 2);
+  const scale = pointerScale(1920, 1920, 2, 1);
+  const rect = dragRect({ x: 40, y: 108 }, { x: 1245, y: 155 }, { x: 0, y: 0 }, scale);
+  assert.deepEqual(rect, { x: 40, y: 108, width: 1205, height: 47 });
 });
 
 test('clamp keeps a drag inside the monitor without collapsing a normal box', () => {

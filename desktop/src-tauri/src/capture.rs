@@ -222,6 +222,23 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn root_frame_matches_the_pointer_space_screen() {
+        let Some(xid) = x11_root_xid() else {
+            return;
+        };
+        let Some(frame) = x11_frame_of(xid) else {
+            return;
+        };
+        let Some((root_w, root_h)) = x11_root_size() else {
+            return;
+        };
+        assert_eq!(frame.x, 0);
+        assert_eq!(frame.y, 0);
+        assert_eq!((frame.width, frame.height), (root_w, root_h));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn pointer_monitor_matches_the_root_on_this_display() {
         let Some((root_w, root_h)) = x11_root_size() else {
             return;
@@ -649,6 +666,112 @@ fn x11_root_size() -> Option<(i32, i32)> {
         let height = XDisplayHeight(display, screen);
         XCloseDisplay(display);
         (width > 0 && height > 0).then_some((width, height))
+    }
+}
+
+/// X11 root coordinates and size of a window. `XGetGeometry` reports the size
+/// in device pixels but its x/y are parent-relative, so the origin comes from
+/// `XTranslateCoordinates`. This is the pointer space used by captures.
+#[cfg(target_os = "linux")]
+pub fn x11_frame_of(xid: u64) -> Option<Rect> {
+    use std::ffi::{c_int, c_uint, c_void};
+
+    #[link(name = "X11")]
+    unsafe extern "C" {
+        fn XOpenDisplay(name: *const i8) -> *mut c_void;
+        fn XCloseDisplay(display: *mut c_void) -> c_int;
+        fn XDefaultRootWindow(display: *mut c_void) -> u64;
+        fn XGetGeometry(
+            display: *mut c_void,
+            window: u64,
+            root: *mut u64,
+            x: *mut c_int,
+            y: *mut c_int,
+            width: *mut c_uint,
+            height: *mut c_uint,
+            border: *mut c_uint,
+            depth: *mut c_uint,
+        ) -> c_int;
+        fn XTranslateCoordinates(
+            display: *mut c_void,
+            src: u64,
+            dest: u64,
+            src_x: c_int,
+            src_y: c_int,
+            dest_x: *mut c_int,
+            dest_y: *mut c_int,
+            child: *mut u64,
+        ) -> c_int;
+    }
+
+    if xid == 0 {
+        return None;
+    }
+    unsafe {
+        let display = XOpenDisplay(std::ptr::null());
+        if display.is_null() {
+            return None;
+        }
+        let mut root_ret = 0u64;
+        let mut parent_x = 0;
+        let mut parent_y = 0;
+        let mut width = 0u32;
+        let mut height = 0u32;
+        let mut border = 0u32;
+        let mut depth = 0u32;
+        let geometry = XGetGeometry(
+            display,
+            xid,
+            &mut root_ret,
+            &mut parent_x,
+            &mut parent_y,
+            &mut width,
+            &mut height,
+            &mut border,
+            &mut depth,
+        );
+        if geometry == 0 || width == 0 || height == 0 {
+            XCloseDisplay(display);
+            return None;
+        }
+        let root = XDefaultRootWindow(display);
+        let mut x = 0;
+        let mut y = 0;
+        let mut child = 0u64;
+        let translated =
+            XTranslateCoordinates(display, xid, root, 0, 0, &mut x, &mut y, &mut child);
+        XCloseDisplay(display);
+        if translated == 0 {
+            return None;
+        }
+        Some(Rect {
+            x,
+            y,
+            width: width as i32,
+            height: height as i32,
+        })
+    }
+}
+
+#[cfg(all(target_os = "linux", test))]
+fn x11_root_xid() -> Option<u64> {
+    use std::ffi::{c_int, c_void};
+
+    #[link(name = "X11")]
+    unsafe extern "C" {
+        fn XOpenDisplay(name: *const i8) -> *mut c_void;
+        fn XCloseDisplay(display: *mut c_void) -> c_int;
+        fn XDefaultRootWindow(display: *mut c_void) -> u64;
+    }
+
+    unsafe {
+        let display = XOpenDisplay(std::ptr::null());
+        if display.is_null() {
+            return None;
+        }
+        let root = XDefaultRootWindow(display);
+        XCloseDisplay(display);
+        (root != 0).then_some(root)
     }
 }
 

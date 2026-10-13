@@ -9,7 +9,7 @@ mod secrets;
 mod settings;
 mod translate;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -36,6 +36,9 @@ pub struct AppState {
     pub overlay_close: Mutex<Option<CssRect>>,
     pub overlay_shape: Mutex<Option<(i32, i32, i32, i32)>>,
     pub overlay_visible: AtomicBool,
+    /// X11 window ids captured on the GTK thread. Frame queries from the
+    /// async pipeline use these instead of tao's scale-multiplied origin.
+    pub device_xids: Mutex<HashMap<String, u64>>,
 }
 
 pub fn run() {
@@ -74,6 +77,7 @@ pub fn run() {
             overlay_close: Mutex::new(None),
             overlay_shape: Mutex::new(None),
             overlay_visible: AtomicBool::new(false),
+            device_xids: Mutex::new(HashMap::new()),
         })
         .setup(|app| {
             configure_runtime(app.handle());
@@ -554,25 +558,158 @@ fn emit_selection_windows(app: &AppHandle, host: Rect, windows: &[capture::SnapW
     let Some(window) = app.get_webview_window("selection") else {
         return;
     };
-    let origin = window
+    let tao = window
         .inner_position()
         .unwrap_or(PhysicalPosition::new(host.x, host.y));
+    let frame = device_frame(app, &window).unwrap_or(Rect {
+        x: tao.x,
+        y: tao.y,
+        width: host.width,
+        height: host.height,
+    });
     let scale = window.scale_factor().unwrap_or(1.0);
     eprintln!(
-        "[selection] webview origin {},{} host {},{} {}x{} scale {}",
-        origin.x, origin.y, host.x, host.y, host.width, host.height, scale
+        "[selection] webview origin {},{} tao {},{} device {}x{} host {},{} {}x{} scale {}",
+        frame.x,
+        frame.y,
+        tao.x,
+        tao.y,
+        frame.width,
+        frame.height,
+        host.x,
+        host.y,
+        host.width,
+        host.height,
+        scale
     );
     let _ = window.emit(
         "selection-windows",
         json!({
             "windows": windows,
             "displayBounds": host,
-            "webviewOrigin": { "x": origin.x, "y": origin.y },
+            "webviewOrigin": { "x": frame.x, "y": frame.y },
+            "deviceWidth": frame.width,
+            "deviceHeight": frame.height,
             "scale": scale,
             "requiresAccessibility": false,
             "requiresScreenRecording": false
         }),
     );
+}
+
+/// X11 frame when we have learned the window id, otherwise tao's physical
+/// position. tao multiplies GTK configure coordinates by `scale_factor`. On a
+/// GTK that already reports device pixels that doubles a non-zero origin, and
+/// the overlay then draws away from the selection. At 0,0 the mistake is hidden.
+pub(crate) fn device_frame(app: &AppHandle, window: &WebviewWindow) -> Option<Rect> {
+    #[cfg(target_os = "linux")]
+    {
+        if gtk_context_owner() {
+            remember_device_xid(app, window);
+        }
+        if let Some(frame) = cached_x11_frame(app, window.label()) {
+            return Some(frame);
+        }
+        if !gtk_context_owner() {
+            if let Some(frame) = device_frame_on_main(app, window.label()) {
+                return Some(frame);
+            }
+        }
+    }
+    tao_device_frame(window)
+}
+
+fn tao_device_frame(window: &WebviewWindow) -> Option<Rect> {
+    let pos = window.inner_position().ok()?;
+    let size = window.inner_size().ok()?;
+    Some(Rect {
+        x: pos.x,
+        y: pos.y,
+        width: size.width.max(1) as i32,
+        height: size.height.max(1) as i32,
+    })
+}
+
+/// A real X11 origin wins over tao. `None` means the frame was not measured
+/// yet, so the caller keeps tao's value.
+pub(crate) fn prefer_frame_origin(x11: Option<i32>, tao: i32) -> i32 {
+    x11.unwrap_or(tao)
+}
+
+#[cfg(target_os = "linux")]
+fn gtk_context_owner() -> bool {
+    gtk::glib::MainContext::default().is_owner()
+}
+
+#[cfg(target_os = "linux")]
+fn cached_x11_frame(app: &AppHandle, label: &str) -> Option<Rect> {
+    let xid = app
+        .state::<AppState>()
+        .device_xids
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(label).copied())?;
+    capture::x11_frame_of(xid)
+}
+
+#[cfg(target_os = "linux")]
+fn device_frame_on_main(app: &AppHandle, label: &str) -> Option<Rect> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let app_main = app.clone();
+    let label_main = label.to_string();
+    let posted = app.run_on_main_thread(move || {
+        if let Some(window) = app_main.get_webview_window(&label_main) {
+            remember_device_xid(&app_main, &window);
+        }
+        let _ = tx.send(cached_x11_frame(&app_main, &label_main));
+    });
+    if posted.is_err() {
+        return None;
+    }
+    rx.recv_timeout(std::time::Duration::from_millis(300))
+        .ok()
+        .flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn remember_device_xid(app: &AppHandle, window: &WebviewWindow) {
+    use gtk::prelude::WidgetExt;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+    let Some(gdk_window) = gtk_window.window() else {
+        return;
+    };
+    cache_device_xid(app, window.label(), &gdk_window);
+}
+
+#[cfg(target_os = "linux")]
+fn cache_device_xid(app: &AppHandle, label: &str, gdk_window: &gtk::gdk::Window) {
+    let xid = gdk_x11_xid(gdk_window);
+    if xid == 0 {
+        return;
+    }
+    if let Ok(mut guard) = app.state::<AppState>().device_xids.lock() {
+        guard.insert(label.to_string(), xid);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn gdk_x11_xid(window: &gtk::gdk::Window) -> u64 {
+    use gtk::glib::ObjectType;
+
+    #[link(name = "gdk-3")]
+    unsafe extern "C" {
+        fn gdk_x11_window_get_xid(window: *mut std::ffi::c_void) -> u64;
+    }
+    unsafe { gdk_x11_window_get_xid(window.as_ptr().cast()) }
+}
+
+#[cfg(target_os = "linux")]
+fn x11_width_of(window: &gtk::gdk::Window) -> Option<f64> {
+    let frame = capture::x11_frame_of(gdk_x11_xid(window))?;
+    (frame.width > 1).then_some(f64::from(frame.width))
 }
 
 fn dismiss_overlay(app: &AppHandle) {
@@ -625,10 +762,11 @@ fn apply_overlay_input_shape(
             return;
         };
         wire_overlay_clicks(gtk_window.upcast_ref(), &window.app_handle());
-        // GDK input shapes use the same logical pixels as gdk_window_get_width.
-        // At GDK_SCALE=2 that width is half the X11 window, and a logical
-        // rectangle covers twice as many device pixels. CSS pixels match this
-        // only when the webview viewport matches the GDK window.
+        cache_device_xid(&window.app_handle(), window.label(), &gdk_window);
+        // GDK's logical width and the X11 width diverge under GDK_SCALE.
+        // Some builds treat the input shape as logical pixels, others as
+        // device pixels. Cover the visible 关闭 in both when they disagree.
+        // At scale 1 the two rectangles are the same.
         let logical_width = f64::from(gdk_window.width().max(1));
         let css_width = if css_viewport_width.is_finite() && css_viewport_width > 1.0 {
             css_viewport_width
@@ -636,12 +774,8 @@ fn apply_overlay_input_shape(
             logical_width
         };
         let to_logical = logical_width / css_width;
-        let logical_close = close.map(|rect| CssRect {
-            x: rect.x * to_logical,
-            y: rect.y * to_logical,
-            width: rect.width * to_logical,
-            height: rect.height * to_logical,
-        });
+        let to_device = x11_width_of(&gdk_window).unwrap_or(logical_width) / css_width;
+        let logical_close = close.map(|rect| scale_css_rect(rect, to_logical));
         set_overlay_close(&window.app_handle(), logical_close);
         let region = match css {
             Some(rect) => {
@@ -649,22 +783,30 @@ fn apply_overlay_input_shape(
                 // region to that full toolbar on the first report so a later
                 // layout pass does not reshape under the pointer — GTK drops
                 // the click that lands in the same moment as an input-shape change.
-                let rect = toolbar_hit_target(rect);
-                let pad = 16.0;
-                let x = ((rect.x - pad) * to_logical).floor() as i32;
-                let y = ((rect.y - pad) * to_logical).floor() as i32;
-                let width = ((rect.width + pad * 2.0) * to_logical).ceil().max(1.0) as i32;
-                let height = ((rect.height + pad * 2.0) * to_logical).ceil().max(1.0) as i32;
-                let next = (x, y, width, height);
+                let rects = overlay_input_rects(rect, to_logical, to_device);
+                let next = shape_bounds(&rects).unwrap_or((0, 0, 1, 1));
                 if overlay_shape_covers(&window.app_handle(), next) {
                     return;
                 }
                 set_overlay_shape(&window.app_handle(), Some(next));
                 eprintln!(
-                    "[overlay] input shape logical {x},{y} {width}x{height} from css {:.1},{:.1} {:.1}x{:.1} x{to_logical:.3}",
-                    rect.x, rect.y, rect.width, rect.height
+                    "[overlay] input shape {} from css {:.1},{:.1} {:.1}x{:.1} logical x{to_logical:.3} device x{to_device:.3}",
+                    rects
+                        .iter()
+                        .map(|item| format!("{},{} {}x{}", item.0, item.1, item.2, item.3))
+                        .collect::<Vec<_>>()
+                        .join(" + "),
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height
                 );
-                Region::create_rectangle(&RectangleInt::new(x, y, width, height))
+                let cairo_rects: Vec<RectangleInt> = rects
+                    .iter()
+                    .copied()
+                    .map(|(x, y, width, height)| RectangleInt::new(x, y, width, height))
+                    .collect();
+                Region::create_rectangles(&cairo_rects)
             }
             None => {
                 set_overlay_shape(&window.app_handle(), None);
@@ -686,6 +828,90 @@ fn apply_overlay_input_shape(
 /// Result mode is 原文|译文|关闭. The status bar is only 关闭, pinned to the
 /// same right edge. Reserve the wider toolbar up front so the input shape
 /// already contains 关闭 when the two extra buttons appear.
+fn scale_css_rect(rect: CssRect, scale: f64) -> CssRect {
+    CssRect {
+        x: rect.x * scale,
+        y: rect.y * scale,
+        width: rect.width * scale,
+        height: rect.height * scale,
+    }
+}
+
+fn scaled_shape(rect: CssRect, scale: f64, pad: f64) -> (i32, i32, i32, i32) {
+    let x = ((rect.x - pad) * scale).floor() as i32;
+    let y = ((rect.y - pad) * scale).floor() as i32;
+    let width = ((rect.width + pad * 2.0) * scale).ceil().max(1.0) as i32;
+    let height = ((rect.height + pad * 2.0) * scale).ceil().max(1.0) as i32;
+    (x, y, width, height)
+}
+
+fn union_shape(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let left = a.0.min(b.0);
+    let top = a.1.min(b.1);
+    let right = (a.0 + a.2).max(b.0 + b.2);
+    let bottom = (a.1 + a.3).max(b.1 + b.3);
+    (left, top, (right - left).max(1), (bottom - top).max(1))
+}
+
+/// Toolbar rectangle in the spaces GTK might use for an input shape.
+/// Logical is `gdk_width / css`. Device is `x11_width / css`. When those
+/// match, one rectangle is enough and the hit target does not grow a ghost.
+pub(crate) fn overlay_input_rects(
+    rect: CssRect,
+    logical_scale: f64,
+    device_scale: f64,
+) -> Vec<(i32, i32, i32, i32)> {
+    const PAD: f64 = 16.0;
+    let target = toolbar_hit_target(rect);
+    let logical = scaled_shape(target, logical_scale, PAD);
+    if !device_scale.is_finite()
+        || device_scale <= 0.0
+        || (device_scale - logical_scale).abs() < 0.02
+    {
+        return vec![logical];
+    }
+    let device = scaled_shape(target, device_scale, PAD);
+    if device == logical {
+        vec![logical]
+    } else {
+        vec![logical, device]
+    }
+}
+
+pub(crate) fn shape_bounds(rects: &[(i32, i32, i32, i32)]) -> Option<(i32, i32, i32, i32)> {
+    let mut iter = rects.iter().copied();
+    let first = iter.next()?;
+    Some(iter.fold(first, union_shape))
+}
+
+/// `event.position()` is relative to the GDK window that received it. That
+/// window is often a WebKit child, so add its origin minus the toplevel
+/// origin. Both origins are GDK coordinates; `event.root()` is not, and on
+/// some builds it is device pixels while the close rectangle is logical.
+pub(crate) fn toplevel_point(
+    local_x: f64,
+    local_y: f64,
+    win_x: i32,
+    win_y: i32,
+    top_x: i32,
+    top_y: i32,
+) -> (f64, f64) {
+    (
+        local_x + f64::from(win_x) - f64::from(top_x),
+        local_y + f64::from(win_y) - f64::from(top_y),
+    )
+}
+
+pub(crate) fn close_contains(x: f64, y: f64, rect: CssRect) -> bool {
+    const PAD: f64 = 12.0;
+    rect.width >= 1.0
+        && rect.height >= 1.0
+        && x >= rect.x - PAD
+        && y >= rect.y - PAD
+        && x < rect.x + rect.width + PAD
+        && y < rect.y + rect.height + PAD
+}
+
 fn toolbar_hit_target(rect: CssRect) -> CssRect {
     const MIN_WIDTH: f64 = 248.0;
     const MIN_HEIGHT: f64 = 46.0;
@@ -806,12 +1032,11 @@ fn close_button_pressed(app: &AppHandle, event: &gtk::gdk::EventButton) -> bool 
         return false;
     };
     let top = gdk_window.toplevel();
-    let (_status, origin_x, origin_y) = top.origin();
-    let (root_x, root_y) = event.root();
-    let x = root_x - f64::from(origin_x);
-    let y = root_y - f64::from(origin_y);
-    const PAD: f64 = 12.0;
-    x >= rect.x - PAD && y >= rect.y - PAD && x < rect.x + rect.width + PAD && y < rect.y + rect.height + PAD
+    let (_status, top_x, top_y) = top.origin();
+    let (_status, win_x, win_y) = gdk_window.origin();
+    let (local_x, local_y) = event.position();
+    let (x, y) = toplevel_point(local_x, local_y, win_x, win_y, top_x, top_y);
+    close_contains(x, y, rect)
 }
 
 fn set_overlay_close(app: &AppHandle, rect: Option<CssRect>) {
@@ -895,10 +1120,15 @@ fn prepare_capture_window(window: &WebviewWindow) {
             gdk_window.set_override_redirect(true);
         }
         let overlay_app = window.label() == "overlay";
+        let label = window.label().to_string();
         let app = window.app_handle().clone();
+        if let Some(gdk_window) = gtk_window.window() {
+            cache_device_xid(&app, &label, &gdk_window);
+        }
         gtk_window.connect_realize(move |widget| {
             if let Some(gdk_window) = widget.window() {
                 gdk_window.set_override_redirect(true);
+                cache_device_xid(&app, &label, &gdk_window);
             }
             if overlay_app {
                 wire_overlay_clicks(widget.upcast_ref(), &app);
@@ -1421,6 +1651,42 @@ mod selection_tests {
         assert!(shape_already_covers(previous, next));
         let moved = (next.0 + 400, next.1, next.2, next.3);
         assert!(!shape_already_covers(previous, moved));
+    }
+
+    #[test]
+    fn close_hit_uses_the_child_window_offset() {
+        let (x, y) = toplevel_point(10.0, 8.0, 400, 0, 0, 0);
+        assert_eq!((x, y), (410.0, 8.0));
+        let rect = CssRect {
+            x: 400.0,
+            y: 0.0,
+            width: 80.0,
+            height: 40.0,
+        };
+        assert!(close_contains(x, y, rect));
+        // The child-local point is the 原文 side, not 关闭.
+        assert!(!close_contains(10.0, 8.0, rect));
+    }
+
+    #[test]
+    fn input_shape_covers_logical_and_device_when_scales_differ() {
+        let css = CssRect {
+            x: 800.0,
+            y: 200.0,
+            width: 192.0,
+            height: 38.0,
+        };
+        let same = overlay_input_rects(css, 1.0, 1.0);
+        assert_eq!(same.len(), 1);
+        let fractional = overlay_input_rects(css, 1.5, 1.5);
+        assert_eq!(fractional.len(), 1);
+        let split = overlay_input_rects(css, 1.5, 3.0);
+        assert_eq!(split.len(), 2);
+        let bounds = shape_bounds(&split).expect("bounds");
+        assert!(bounds.2 > fractional[0].2);
+        assert!(bounds.3 > fractional[0].3);
+        assert_eq!(prefer_frame_origin(Some(1920), 3840), 1920);
+        assert_eq!(prefer_frame_origin(None, 3840), 3840);
     }
 
     #[test]

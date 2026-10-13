@@ -55,7 +55,16 @@ function normalizeViewportRect(rect) {
   };
 }
 
+let frameDeviceWidth = 0;
+
 function currentDpr() {
+  const css = window.innerWidth;
+  if (frameDeviceWidth > 1 && css > 1) {
+    const ratio = frameDeviceWidth / css;
+    if (ratio > 0.2 && ratio < 8) {
+      return ratio;
+    }
+  }
   const dpr = Number(window.devicePixelRatio);
   if (Number.isFinite(dpr) && dpr > 0) {
     return dpr;
@@ -386,6 +395,9 @@ function fitTextToBox(el, bbox, hint) {
 }
 
 function renderBlocks(payload) {
+  if (Number.isFinite(payload?.deviceWidth) && payload.deviceWidth > 1) {
+    frameDeviceWidth = payload.deviceWidth;
+  }
   root.innerHTML = '';
   applySelectionViewport(payload);
   applySnapshot(payload);

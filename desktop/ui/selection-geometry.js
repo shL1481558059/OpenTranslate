@@ -16,6 +16,29 @@
     return Number.isFinite(scale) && scale > 0 ? scale : 1;
   }
 
+  // CSS pixels become screen pixels by the window's real size, not by
+  // devicePixelRatio. Fractional DPI, GDK_SCALE and a browser zoom can make
+  // those two numbers disagree; the one that matches X11 is device/css.
+  function pointerScale(deviceWidth, cssWidth, devicePixelRatio, pageScale) {
+    const device = Number(deviceWidth);
+    const css = Number(cssWidth);
+    if (device > 1 && css > 1) {
+      const ratio = device / css;
+      if (ratio > 0.2 && ratio < 8) {
+        return ratio;
+      }
+    }
+    const dpr = Number(devicePixelRatio);
+    if (Number.isFinite(dpr) && dpr > 1) {
+      return dpr;
+    }
+    const page = Number(pageScale);
+    if (Number.isFinite(page) && page > 0) {
+      return page;
+    }
+    return 1;
+  }
+
   function clientToScreen(client, origin, scale) {
     const factor = scaleOf(scale);
     return {
@@ -57,6 +80,7 @@
     clientToScreen,
     dragRect,
     clampRect,
-    scaleOf
+    scaleOf,
+    pointerScale
   };
 });

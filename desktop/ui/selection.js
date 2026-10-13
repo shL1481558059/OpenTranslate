@@ -31,6 +31,7 @@ let webviewOrigin = {
   y: Number.isFinite(window.screenY) ? window.screenY : 0
 };
 let pageScale = 1;
+let deviceSize = { width: 0, height: 0 };
 let activePointer = null;
 let lastClient = null;
 let windowRects = [];
@@ -88,14 +89,12 @@ function resizeMask() {
 }
 
 function currentScale() {
-  const dpr = Number(window.devicePixelRatio);
-  if (Number.isFinite(dpr) && dpr > 1) {
-    return dpr;
-  }
-  if (Number.isFinite(pageScale) && pageScale > 0) {
-    return pageScale;
-  }
-  return 1;
+  return window.selectionGeometry.pointerScale(
+    deviceSize.width,
+    window.innerWidth,
+    window.devicePixelRatio,
+    pageScale
+  );
 }
 
 function toClientRect(rect) {
@@ -432,6 +431,12 @@ if (window.snapTranslate?.onSelectionWindows) {
       webviewOrigin = {
         x: payload.webviewOrigin.x,
         y: payload.webviewOrigin.y
+      };
+    }
+    if (Number.isFinite(payload?.deviceWidth) && payload.deviceWidth > 1) {
+      deviceSize = {
+        width: payload.deviceWidth,
+        height: Number.isFinite(payload?.deviceHeight) ? payload.deviceHeight : 0
       };
     }
     rebuildSnapEdges(payload?.windows || []);

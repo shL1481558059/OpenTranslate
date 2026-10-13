@@ -448,26 +448,53 @@ fn compensate_frame(app: &AppHandle, payload: &mut Value) {
     let Some(window) = app.get_webview_window("overlay") else {
         return;
     };
-    let Ok(inner) = window.inner_position() else {
+    let tao = window.inner_position().ok();
+    let frame = crate::device_frame(app, &window);
+    if frame.is_none() && tao.is_none() {
         return;
-    };
-    // Keep framebuffer pixels. overlay.js divides by devicePixelRatio, which
-    // can disagree with GTK's scale_factor (fractional scaling, Xft.dpi).
-    // Dividing here by scale_factor shifts the mask and shrinks the toolbar
-    // below the CSS button size, so the close control is drawn off the hit zone.
-    let origin_x = payload
+    }
+    let origin_x = crate::prefer_frame_origin(
+        frame.map(|item| item.x),
+        tao.map(|item| item.x).unwrap_or(0),
+    );
+    let origin_y = crate::prefer_frame_origin(
+        frame.map(|item| item.y),
+        tao.map(|item| item.y).unwrap_or(0),
+    );
+    if let Some(frame) = frame {
+        if frame.width > 1 {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("deviceWidth".into(), json!(frame.width));
+                object.insert("deviceHeight".into(), json!(frame.height));
+            }
+        }
+        eprintln!(
+            "[overlay] frame origin {},{} tao {:?} device {}x{}",
+            origin_x,
+            origin_y,
+            tao.map(|inner| (inner.x, inner.y)),
+            frame.width,
+            frame.height
+        );
+    }
+    // Keep framebuffer pixels. overlay.js divides by deviceWidth/innerWidth,
+    // which is the window's real pixel ratio. Dividing again here by GTK
+    // scale_factor was the v0.1.5 shrink. tao's origin is not used when the
+    // X11 frame is known: multiplying configure coordinates by scale_factor
+    // doubles a non-zero origin on a GTK that already speaks device pixels.
+    let bounds_x = payload
         .get("overlayBounds")
         .and_then(|value| value.get("x"))
         .and_then(|value| value.as_i64())
         .unwrap_or(0) as i32;
-    let origin_y = payload
+    let bounds_y = payload
         .get("overlayBounds")
         .and_then(|value| value.get("y"))
         .and_then(|value| value.as_i64())
         .unwrap_or(0) as i32;
     let host = Rect {
-        x: origin_x,
-        y: origin_y,
+        x: bounds_x,
+        y: bounds_y,
         width: 0,
         height: 0,
     };
@@ -478,7 +505,7 @@ fn compensate_frame(app: &AppHandle, payload: &mut Value) {
         let Some(relative) = rect_from_value(rect) else {
             continue;
         };
-        let (x, y, width, height) = viewport_rect(relative, host, inner.x, inner.y);
+        let (x, y, width, height) = viewport_rect(relative, host, origin_x, origin_y);
         if let Some(object) = payload.get_mut(key).and_then(|value| value.as_object_mut()) {
             object.insert("x".into(), json!(x));
             object.insert("y".into(), json!(y));
@@ -498,7 +525,7 @@ fn rect_from_value(value: &Value) -> Option<Rect> {
 }
 
 /// selectionRect is host-relative framebuffer pixels. Subtract the overlay
-/// window's device origin so the page can divide by its own devicePixelRatio.
+/// window's X11 origin so the page can divide by deviceWidth/innerWidth.
 pub(crate) fn viewport_rect(
     host_relative: Rect,
     host: Rect,
@@ -610,6 +637,52 @@ mod tests {
         };
         let (x, y, width, height) = viewport_rect(relative, host, 0, 29);
         assert_eq!((x, y, width, height), (200.0, 211.0, 700.0, 460.0));
+    }
+
+    #[test]
+    fn measured_scale_round_trips_a_css_point() {
+        let origin = 100;
+        let scale = 1.5;
+        let client = 200.0;
+        let screen = (f64::from(origin) + client * scale).round() as i32;
+        let host = Rect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1200,
+        };
+        let relative = Rect {
+            x: screen,
+            y: 80,
+            width: 40,
+            height: 20,
+        };
+        let chosen = crate::prefer_frame_origin(Some(origin), origin * 2);
+        assert_eq!(chosen, origin);
+        let (x, _, _, _) = viewport_rect(relative, host, chosen, 0);
+        let css = x / scale;
+        assert!((css - client).abs() < 0.01, "css {css} from device {x}");
+    }
+
+    #[test]
+    fn doubled_tao_origin_shifts_the_overlay_toward_zero() {
+        let relative = Rect {
+            x: 400,
+            y: 220,
+            width: 600,
+            height: 90,
+        };
+        let host = Rect {
+            x: 1920,
+            y: 100,
+            width: 1920,
+            height: 1080,
+        };
+        let x11 = crate::prefer_frame_origin(Some(1920), 3840);
+        let (x, y, _, _) = viewport_rect(relative, host, x11, 100);
+        assert_eq!((x, y), (400.0, 220.0));
+        let (bad, _, _, _) = viewport_rect(relative, host, 3840, 100);
+        assert!(bad < x);
     }
 
     #[test]
